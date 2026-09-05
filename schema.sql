@@ -1,0 +1,100 @@
+-- Outlook -> SQLite.
+--
+-- Two kinds of column, kept strictly apart:
+--   RAW      written once at ingest, never modified
+--   DERIVED  produced by a pass over the database; delete and rebuild freely
+--
+-- Pipeline order is: fetch -> split -> clean.
+
+PRAGMA journal_mode = WAL;
+
+-- One row per email actually delivered to the mailbox.
+CREATE TABLE IF NOT EXISTS messages (
+    msg_key             TEXT PRIMARY KEY,  -- internetMessageId; stable across folder moves
+    conversation_id     TEXT,
+    subject             TEXT,
+    sender_name         TEXT,
+    sender_addr         TEXT,
+    sent_time           TEXT,              -- ISO8601 UTC
+    received_time       TEXT,
+    folder              TEXT,
+    has_attachments     INTEGER,
+
+    -- RAW
+    body_raw            TEXT,              -- whole body, quoted chain included
+    body_type           TEXT,              -- 'html' | 'text'
+
+    -- DERIVED by the splitter
+    content             TEXT,              -- what this sender newly wrote
+    quoted_history      TEXT,              -- the chain below the boundary
+    boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
+    quoted_from_addr    TEXT,              -- who wrote the quoted part, if the marker said
+    splitter_version    INTEGER,
+
+    -- DERIVED by the cleaner, from `content`
+    cleaned_content     TEXT,
+    cleaner_version     INTEGER,
+
+    first_ingested      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_unsplit  ON messages(splitter_version);
+CREATE INDEX IF NOT EXISTS idx_messages_unclean  ON messages(cleaner_version);
+CREATE INDEX IF NOT EXISTS idx_messages_sent     ON messages(sent_time);
+
+-- Many people per email, so they cannot live in a column on messages.
+CREATE TABLE IF NOT EXISTS participants (
+    msg_key  TEXT NOT NULL REFERENCES messages(msg_key) ON DELETE CASCADE,
+    role     TEXT NOT NULL CHECK (role IN ('from','to','cc','bcc')),
+    addr     TEXT NOT NULL,                -- lowercased at ingest
+    name     TEXT,
+    PRIMARY KEY (msg_key, role, addr)
+);
+CREATE INDEX IF NOT EXISTS idx_participants_addr ON participants(addr);
+
+-- Where a quoted chain begins. One row per marker format.
+--
+--   line_regex     the frame; loose on purpose
+--   require_regex  must ALSO match the same logical line (kills false positives)
+--   confirm_regex  must match one of the next `confirm_within` lines
+--   example_block  a real snippet this pattern must cut at line 0; enforced
+CREATE TABLE IF NOT EXISTS boundary_patterns (
+    pattern_id      INTEGER PRIMARY KEY,
+    label           TEXT NOT NULL UNIQUE,
+    line_regex      TEXT NOT NULL,
+    require_regex   TEXT,
+    confirm_regex   TEXT,
+    confirm_within  INTEGER NOT NULL DEFAULT 5,
+    priority        INTEGER NOT NULL DEFAULT 100,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    example_block   TEXT NOT NULL,
+    notes           TEXT,
+    created_at      TEXT
+);
+
+-- Boilerplate to strip from `content`.
+CREATE TABLE IF NOT EXISTS disclaimer_patterns (
+    pattern_id    INTEGER PRIMARY KEY,
+    label         TEXT NOT NULL UNIQUE,
+    pattern_text  TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'literal' CHECK (kind IN ('literal','regex')),
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
+-- Which disclaimer stripped what. The only way to answer "why is this empty"
+-- and "which patterns never fire".
+CREATE TABLE IF NOT EXISTS disclaimer_hits (
+    msg_key        TEXT NOT NULL REFERENCES messages(msg_key) ON DELETE CASCADE,
+    pattern_id     INTEGER NOT NULL REFERENCES disclaimer_patterns(pattern_id),
+    chars_removed  INTEGER NOT NULL,
+    PRIMARY KEY (msg_key, pattern_id)
+);
+
+-- Fetch bookkeeping: how far the last sync got.
+CREATE TABLE IF NOT EXISTS sync_state (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT
+);
