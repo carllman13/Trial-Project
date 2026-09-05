@@ -172,6 +172,159 @@ conn.execute("INSERT INTO boundary_patterns (label, line_regex, example_block) "
 check("a pattern that misses its example is caught",
       splitter.test_patterns(conn, log=lambda *a: None), 1)
 
+# --------------------------------------------------------------------------
+# fetch -- the COM-facing helpers, exercised with stubs.
+#
+# None of this can run on a build machine, so the awkward parts (address
+# resolution, key extraction, time conversion) are written as plain functions
+# over a mail item and tested against objects that behave like Outlook's,
+# including the ways Outlook fails: absent properties raise, GetExchangeUser()
+# returns None for distribution lists, and internal senders come back as
+# directory paths rather than addresses.
+# --------------------------------------------------------------------------
+print("\nfetch -- Outlook quirks, against stubs")
+import datetime as dt
+
+import fetch
+
+
+class Props:
+    """PropertyAccessor: absent tags raise, exactly as Outlook does."""
+    def __init__(self, **tags):
+        self._tags = tags
+
+    def GetProperty(self, tag):
+        if tag not in self._tags:
+            raise Exception("property not found")
+        return self._tags[tag]
+
+
+class Obj:
+    """Anything with a PropertyAccessor and arbitrary attributes."""
+    def __init__(self, props=None, **attrs):
+        self.PropertyAccessor = Props(**(props or {}))
+        for k, v in attrs.items():
+            setattr(self, k, v)
+
+
+class Exploding:
+    """An attribute Outlook refuses to hand over."""
+    def __get__(self, *a):
+        raise Exception("COM error")
+
+
+MSG_ID = fetch.PR_INTERNET_MESSAGE_ID
+SENDER_SMTP = fetch.PR_SENDER_SMTP_ADDRESS
+SMTP = fetch.PR_SMTP_ADDRESS
+EX_PATH = "/O=EXCHANGE/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=JSMITH"
+
+check("role 1 is to", fetch.role_for(1), "to")
+check("role 2 is cc", fetch.role_for(2), "cc")
+check("role 3 is bcc", fetch.role_for(3), "bcc")
+check("unknown role is skipped", fetch.role_for(5), None)
+
+check("message key from PR_INTERNET_MESSAGE_ID",
+      fetch.message_key(Obj({MSG_ID: "<a1@acme.com>"})), "<a1@acme.com>")
+check("no message key means skip the item", fetch.message_key(Obj({})), None)
+
+# Sender: the SMTP property first, then the Exchange lookup, then the raw
+# field -- and never a directory path.
+check("sender via SMTP property",
+      fetch.sender_address(Obj({SENDER_SMTP: "jane.patel@acme.com"})),
+      "jane.patel@acme.com")
+check("sender via GetExchangeUser when the property is absent",
+      fetch.sender_address(Obj(
+          {}, Sender=Obj({}, GetExchangeUser=lambda: Obj(
+              {}, PrimarySmtpAddress="jane.patel@acme.com")),
+          SenderEmailAddress=EX_PATH)),
+      "jane.patel@acme.com")
+check("external sender falls back to the raw field",
+      fetch.sender_address(Obj({}, Sender=None,
+                               SenderEmailAddress="ds.ext@blackfuel.ai")),
+      "ds.ext@blackfuel.ai")
+check("an unresolved directory path is stored as NULL, not as junk",
+      fetch.sender_address(Obj({}, Sender=None, SenderEmailAddress=EX_PATH)),
+      None)
+
+check("distribution list resolves via GetExchangeDistributionList",
+      fetch.smtp_from_address_entry(Obj(
+          {}, GetExchangeUser=lambda: None,
+          GetExchangeDistributionList=lambda: Obj({}, PrimarySmtpAddress="team@acme.com"),
+          Address=EX_PATH)),
+      "team@acme.com")
+check("address entry with nothing resolvable", fetch.smtp_from_address_entry(
+      Obj({}, GetExchangeUser=lambda: None, Address=EX_PATH)), None)
+check("no address entry at all", fetch.smtp_from_address_entry(None), None)
+
+print("\nfetch -- times")
+aware = dt.datetime(2026, 9, 1, 9, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+check("aware time converts to UTC", fetch.to_utc_iso(aware), "2026-09-01T07:14:00Z")
+check("missing time stays None", fetch.to_utc_iso(None), None)
+os.environ["TZ"] = "Europe/London"
+try:
+    import time as _time
+    _time.tzset()
+    naive = dt.datetime(2026, 9, 1, 9, 14, 0)          # BST, UTC+1
+    check("naive time is read as local, not as UTC",
+          fetch.to_utc_iso(naive), "2026-09-01T08:14:00Z")
+except AttributeError:
+    pass                                                # not a POSIX machine
+
+print("\nfetch -- item to row")
+item = Obj(
+    {MSG_ID: "<x1@acme.com>", SENDER_SMTP: "jane.patel@acme.com"},
+    SenderName="Jane Patel", Subject="RE: Q3 numbers", ConversationID="c1",
+    SentOn=aware, ReceivedTime=aware, HTMLBody="<p>Hi</p>", Attachments=None,
+    Recipients=[
+        Obj({SMTP: "carl.wei@acme.com"}, Type=1, Name="Carl Wei",
+            AddressEntry=Obj({SMTP: "carl.wei@acme.com"})),
+        Obj({}, Type=2, Name="Legal",
+            AddressEntry=Obj({}, GetExchangeUser=lambda: Obj(
+                {}, PrimarySmtpAddress="legal@acme.com"))),
+        Obj({}, Type=2, Name="Unresolvable",
+            AddressEntry=Obj({}, GetExchangeUser=lambda: None, Address=EX_PATH)),
+    ])
+msg, parts = fetch.message_from_item(item, folder_path="\\Mailbox\\Inbox")
+check("msg_key", msg["msg_key"], "<x1@acme.com>")
+check("sender_addr resolved", msg["sender_addr"], "jane.patel@acme.com")
+check("sent_time in UTC", msg["sent_time"], "2026-09-01T07:14:00Z")
+check("body kept raw as html", (msg["body_raw"], msg["body_type"]), ("<p>Hi</p>", "html"))
+check("folder recorded", msg["folder"], "\\Mailbox\\Inbox")
+check("participants include sender and resolved recipients", sorted(parts), sorted([
+    ("from", "jane.patel@acme.com", "Jane Patel"),
+    ("to", "carl.wei@acme.com", "Carl Wei"),
+    ("cc", "legal@acme.com", "Legal"),
+]))
+check_true("unresolvable recipient is dropped, not stored as a path",
+           all(not a.startswith("/") for _r, a, _n in parts))
+
+check("an item with no message id is skipped",
+      fetch.message_from_item(Obj({}, SenderName="x")), None)
+
+class NoHtml(Obj):
+    HTMLBody = Exploding()
+check("plain-text item falls back to Body",
+      fetch.body_of(NoHtml({}, Body="just text")), ("just text", "text"))
+
+print("\nfetch -- stored rows survive the pipeline")
+conn = with_db()
+msg, parts = fetch.message_from_item(item, folder_path="Inbox")
+dbmod.store_message(conn, msg, parts)
+conn.commit()
+check("derived columns start NULL so the splitter picks it up",
+      conn.execute("SELECT content, cleaned_content, splitter_version "
+                   "FROM messages").fetchone(), (None, None, None))
+splitter.split_messages(conn, log=lambda *a: None)
+cleaner.clean_messages(conn, log=lambda *a: None)
+check("fetched row cleans", conn.execute(
+    "SELECT cleaned_content FROM messages").fetchone()[0], "Hi")
+check("cc is queryable by address", conn.execute(
+    "SELECT COUNT(*) FROM participants WHERE role='cc' AND addr='legal@acme.com'"
+).fetchone()[0], 1)
+
+check_true("restrict filter is local-time and locale-formatted",
+           "/" in fetch.restrict_filter(dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")

@@ -1,6 +1,7 @@
 """One entry point for the whole pipeline.
 
     python3 cli.py mail.db init            create tables, seed default patterns
+    python3 cli.py mail.db fetch           read mail from classic Outlook
     python3 cli.py mail.db demo            load a fake mailbox to try things on
     python3 cli.py mail.db split           find quoted chains
     python3 cli.py mail.db clean           strip disclaimers
@@ -73,11 +74,20 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
-        "init", "demo", "split", "clean", "run", "report",
+        "init", "fetch", "demo", "split", "clean", "run", "report",
         "test-patterns", "unsplit"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
-    ap.add_argument("--limit", type=int, default=5)
+    ap.add_argument("--limit", type=int, default=5,
+                    help="fetch: stop after N messages; unsplit: samples to show")
+    ap.add_argument("--folder", help="fetch: folder path, e.g. 'Inbox/Clients'")
+    ap.add_argument("--recurse", action="store_true",
+                    help="fetch: include subfolders")
+    ap.add_argument("--since-days", type=int, default=30,
+                    help="fetch: how far back to look (0 for everything)")
+    ap.add_argument("--no-restrict", action="store_true",
+                    help="fetch: filter in Python instead of asking Outlook "
+                         "(slower, but immune to date-format trouble)")
     args = ap.parse_args()
 
     if args.command == "init":
@@ -86,7 +96,13 @@ def main():
 
     conn = dbmod.connect(args.db)
     try:
-        if args.command == "demo":
+        if args.command == "fetch":
+            import fetch
+            fetch.fetch_messages(
+                conn, folder=args.folder, recurse=args.recurse,
+                since_days=args.since_days, use_restrict=not args.no_restrict,
+                limit=args.limit if args.limit != 5 else None)
+        elif args.command == "demo":
             import demo
             demo.load(conn)
         elif args.command == "split":

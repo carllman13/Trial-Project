@@ -5,12 +5,17 @@ boilerplate, stores the result. Standard library only -- nothing to install,
 which matters on a locked-down work machine.
 
 ```
-python3 cli.py mail.db init      # create tables, seed default patterns
-python3 cli.py mail.db demo      # load a fake mailbox to try it on
-python3 cli.py mail.db run       # split, then clean
-python3 cli.py mail.db report    # what fired, what never fires
-python3 tests.py                 # 44 assertions
+python3 cli.py mail.db init                    # create tables, seed patterns
+python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
+python3 cli.py mail.db run                     # split, then clean
+python3 cli.py mail.db report                  # what fired, what never fires
+python3 tests.py                               # 77 assertions
 ```
+
+Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
+
+`fetch` needs Windows, classic Outlook running, and `pip install pywin32`.
+Everything after `fetch` is plain Python and SQLite.
 
 ## Files
 
@@ -22,7 +27,7 @@ python3 tests.py                 # 44 assertions
 | `splitter.py` | Find where the quoted chain begins |
 | `cleaner.py` | Remove disclaimers |
 | `cli.py` | One entry point for every command |
-| `fetch.py` | **Stub.** Pull mail from classic Outlook -- the one unwritten half |
+| `fetch.py` | Pull mail from classic Outlook via its automation interface |
 | `demo.py` | Fake mailbox with real-world marker formats |
 | `tests.py` | Assertions |
 | `SPLITTER.md` | Why the splitter works the way it does |
@@ -126,11 +131,42 @@ changing date or reference number.
 - A message that cleans to **empty** is named during the run. That almost
   always means a disclaimer pattern is too broad.
 
-## Not done yet
+## Fetching, and what Outlook does to you
 
-`fetch.py`, which reads from classic Outlook on Windows via its automation
-interface. Its docstring gives the exact contract and the four traps, the two
-worst being that `SenderEmailAddress` returns an Exchange directory path
-(`/O=EXCHANGE/OU=.../CN=JSMITH`) rather than an email address for internal
-senders, and that `EntryID` changes when a message moves folders, so it cannot
-be the key.
+`fetch.py` handles four traps. Worth knowing they exist, because the symptoms
+are all silent:
+
+**Addresses are not addresses.** For internal senders Exchange returns
+`/O=EXCHANGE/OU=.../CN=JSMITH`, not `jane.patel@acme.com`. Resolution is tried
+three ways -- the SMTP property, `GetExchangeUser()`, then the raw field --
+because each fails on a different kind of recipient, and distribution lists
+need `GetExchangeDistributionList()` instead. Anything still unresolved is
+stored as NULL rather than as a directory path, so a query by address never
+half-matches junk.
+
+**`EntryID` changes when a message moves folders**, so it cannot be the key.
+The internet message id is read through `PropertyAccessor` instead. Items
+without one (drafts, some calendar items) are skipped and counted.
+
+**Times come back naive and local.** They are read as local and converted to
+UTC. Treating them as UTC would shift every timestamp, and by an extra hour
+across a DST boundary.
+
+**Outlook's `Restrict` filter wants a locale-formatted local-time string**, not
+ISO. On a machine with non-US regional settings it can match nothing at all
+and look like an empty mailbox -- `--no-restrict` filters in Python instead,
+slower but immune.
+
+A single item that Outlook refuses to hand over is logged and skipped rather
+than ending the run; re-running is always safe, since `msg_key` is the primary
+key.
+
+Only RAW columns are written. `content` and `cleaned_content` are left NULL,
+which is what marks a message as needing work.
+
+### Untested against a real mailbox
+
+Everything above is exercised against stubs that mimic Outlook's behaviour,
+including its failures. None of it has run against real Outlook -- that needs
+Windows. Expect to shake something out on the first run; start with
+`--limit 20` and read what lands.
