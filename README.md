@@ -8,16 +8,15 @@ install, which matters on a locked-down work machine.
 | File | What it does |
 |---|---|
 | `schema.sql` | The database: `messages`, `participants`, `disclaimer_patterns`, `disclaimer_hits` |
-| `textnorm.py` | HTML -> plain text, whitespace tidying |
-| `clean.py` | Removes disclaimers. Re-runnable. |
+| `outlook_reader.py` | HTML -> text, and the disclaimer cleaning. Fetch still to come. |
 | `demo_seed.py` | Fake mailbox so you can test without Outlook |
 
 ## Try it
 
 ```
 python3 demo_seed.py mail.db
-python3 clean.py mail.db
-python3 clean.py mail.db --report
+python3 outlook_reader.py mail.db --clean
+python3 outlook_reader.py mail.db --report
 ```
 
 ## The idea
@@ -41,7 +40,7 @@ INSERT INTO disclaimer_patterns (label, pattern_text, kind, created_at)
 VALUES ('Vendor footer', 'This message is intended only for...', 'literal', datetime('now'));
 ```
 
-Then `python3 clean.py mail.db`.
+Then `python3 outlook_reader.py mail.db --clean`.
 
 Paste the text as you see it on screen. Line breaks do not matter: literal
 patterns match whitespace-blind, because the same footer arrives wrapped
@@ -61,5 +60,5 @@ pattern is too broad.
 
 ## Not done yet
 
-Fetching from Outlook. The `messages` and `participants` tables are the target
-shape; something needs to fill them.
+`fetch_messages()` in `outlook_reader.py` is a stub. Its docstring says what it
+needs to write; everything downstream of it works.

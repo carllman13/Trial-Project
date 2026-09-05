@@ -8,7 +8,7 @@ same footer, and it is what breaks naive exact-string matching.
 import sqlite3
 import sys
 
-import textnorm
+import outlook_reader
 
 DISCLAIMER = (
     "This e-mail and any attachments are confidential and intended solely "
@@ -82,8 +82,8 @@ def main(path):
 
     for m in MESSAGES:
         body_html = m["unique_html"] + m["history_html"]
-        unique_text = textnorm.html_to_text(m["unique_html"])
-        body_text = textnorm.html_to_text(body_html)
+        unique_text = outlook_reader.html_to_text(m["unique_html"])
+        body_text = outlook_reader.html_to_text(body_html)
         db.execute(
             """INSERT OR REPLACE INTO messages
                (msg_key, conversation_id, subject, sender_name, sender_addr,
@@ -93,7 +93,7 @@ def main(path):
             (m["msg_key"], m["conversation_id"], m["subject"], m["sender_name"],
              m["sender_addr"], m["sent_time"], m["received_time"], body_html,
              m["unique_html"], unique_text,
-             textnorm.quoted_history(body_text, unique_text)),
+             outlook_reader.quoted_history(body_text, unique_text)),
         )
         rows = [(m["msg_key"], "from", m["sender_addr"].lower(), m["sender_name"])]
         rows += [(m["msg_key"], "to", a.lower(), n) for a, n in m["to"]]
