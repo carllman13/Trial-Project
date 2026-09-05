@@ -86,8 +86,9 @@ separator = ("Approving now.\n\n"
              "________________________________\n"
              "From: Jane Patel <jane.patel@acme.com>\n"
              "Sent: 03 September 2026 08:30\n\nolder")
-content, _h, _p, _a = splitter.split(separator, pats)
-check("underscore separator cuts above the block", content, "Approving now.")
+content, hist, _p, _a = splitter.split(separator, pats)
+check("rule line above the block is not left in content", content, "Approving now.")
+check_true("rule line goes down with the history", hist.startswith("____"))
 
 for label, body in [
     ("French De:/Envoyé:", "Bonjour.\n\nDe : Jane <j@acme.com>\nEnvoyé : 3 septembre 2026\nObjet : test\n\nvieux"),
@@ -103,6 +104,7 @@ for label, body in [
     ("'wrote:' in prose", "On the topic of the memo he wrote:\nI think it is fine."),
     ("'From:' in prose", "From: what I can tell the numbers are fine.\nNo quoting here."),
     ("plain message", "Canteen at 12:30?"),
+    ("quoted lines alone", "> some quoted text\n> more quoted text"),
     ("single > in prose", "Use x > y as the filter.\nThat is all."),
 ]:
     content, hist, pid, _a = splitter.split(body, pats)

@@ -22,7 +22,7 @@ python3 tests.py                 # 44 assertions
 | `splitter.py` | Find where the quoted chain begins |
 | `cleaner.py` | Remove disclaimers |
 | `cli.py` | One entry point for every command |
-| `fetch.py` | **Stub.** Pull mail from Outlook -- the one unwritten half |
+| `fetch.py` | **Stub.** Pull mail from classic Outlook -- the one unwritten half |
 | `demo.py` | Fake mailbox with real-world marker formats |
 | `tests.py` | Assertions |
 | `SPLITTER.md` | Why the splitter works the way it does |
@@ -33,8 +33,8 @@ python3 tests.py                 # 44 assertions
 fetch  ->  split  ->  clean
 ```
 
-**fetch** is slow, needs the network or a running Outlook, and happens once per
-message. It writes `body_raw` and nothing else derived.
+**fetch** needs a running Outlook and happens once per message. It writes
+`body_raw` and nothing else derived.
 
 **split** cuts `body_raw` at the first quoted-chain marker into `content` (what
 this sender newly wrote) and `quoted_history`.
@@ -128,7 +128,9 @@ changing date or reference number.
 
 ## Not done yet
 
-`fetch.py`. Its docstring gives the exact contract, plus the traps on each
-route -- Graph needs an app registration; classic Outlook returns Exchange
-directory paths instead of email addresses, and its EntryID changes when a
-message moves folders.
+`fetch.py`, which reads from classic Outlook on Windows via its automation
+interface. Its docstring gives the exact contract and the four traps, the two
+worst being that `SenderEmailAddress` returns an Exchange directory path
+(`/O=EXCHANGE/OU=.../CN=JSMITH`) rather than an email address for internal
+senders, and that `EntryID` changes when a message moves folders, so it cannot
+be the key.

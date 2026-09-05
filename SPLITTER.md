@@ -108,7 +108,6 @@ Three separate conditions, because they do different work:
 | Outlook header block (DE) | `^\s*Von:\s*\S` | | `^\s*Gesendet:` |
 | Original message marker | `^\s*-+\s*Original Message\s*-+\s*$` | | |
 | Forwarded message marker | `^\s*-+\s*Forwarded message\s*-+\s*$` | | |
-| Quote prefix run | `^\s*>` | | `^\s*>` (within 2) |
 
 French and German rows are guesses at the localised forms -- verify against
 real mail before trusting them. A wrong pattern that never fires is visible in
@@ -220,3 +219,5 @@ messages with no boundary found.
    Those stay unsplit, which is the correct outcome.
 3. **Attribution is best-effort.** Address usually available, date often not.
 4. **The boundary line itself** goes to `quoted_history`, not `content`.
+   Trailing blank lines and rule lines (`________`, `--------`) immediately
+   above the boundary go down with it, since Outlook draws one there.

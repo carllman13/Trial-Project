@@ -29,6 +29,9 @@ SPLITTER_CODE_VERSION = 1
 MAX_JOIN = 3
 
 _ADDR = re.compile(r"<([^<>@\s]+@[^<>\s]+)>")
+# A line of nothing but rule characters. Outlook draws one above its reply
+# header block; it belongs with the history, not with what the sender wrote.
+_RULE_LINE = re.compile(r"^[\s_\-=*~]+$")
 
 # Seeded on first init. Each carries a real snippet it must cut at line 0.
 DEFAULT_PATTERNS = [
@@ -93,29 +96,6 @@ DEFAULT_PATTERNS = [
         line_regex=r"^\s*-{2,}\s*Forwarded message\s*-{2,}\s*$",
         priority=5,
         example_block="---------- Forwarded message ----------\nFrom: someone",
-    ),
-    dict(
-        label="Outlook underscore separator",
-        line_regex=r"^\s*_{10,}\s*$",
-        confirm_regex=r"^\s*(From|De|Von)\s*:",
-        confirm_within=3,
-        priority=1,
-        example_block=(
-            "________________________________\n"
-            "From: Jane Patel <jane.patel@acme.com>\n"
-            "Sent: 03 September 2026 08:30"
-        ),
-        notes="Sits just above the header block, so it cuts marginally earlier.",
-    ),
-    dict(
-        label="Quoted line run",
-        line_regex=r"^\s*>",
-        confirm_regex=r"^\s*>",
-        confirm_within=2,
-        priority=90,
-        example_block="> earlier text\n> more earlier text",
-        notes="Last resort: two consecutive '>' lines. Low priority so a real "
-              "marker above them wins.",
     ),
 ]
 
@@ -198,9 +178,14 @@ def split(body_text, patterns):
                     if not any(p.confirm.search(l) for l in window):
                         continue
                 addr = _ADDR.search(logical)
+                head, tail = lines[:i], lines[i:]
+                # Outlook's ______ rule sits just above its header block. Move
+                # any trailing rule or blank lines down with the history.
+                while head and (not head[-1].strip() or _RULE_LINE.match(head[-1])):
+                    tail.insert(0, head.pop())
                 return (
-                    textnorm.normalize("\n".join(lines[:i])),
-                    textnorm.normalize("\n".join(lines[i:])),
+                    textnorm.normalize("\n".join(head)),
+                    textnorm.normalize("\n".join(tail)),
                     p.pattern_id,
                     addr.group(1).lower() if addr else None,
                 )
