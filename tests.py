@@ -87,8 +87,10 @@ separator = ("Approving now.\n\n"
              "From: Jane Patel <jane.patel@acme.com>\n"
              "Sent: 03 September 2026 08:30\n\nolder")
 content, hist, _p, _a = splitter.split(separator, pats)
-check("rule line above the block is not left in content", content, "Approving now.")
-check_true("rule line goes down with the history", hist.startswith("____"))
+# Everything above the boundary stays in content, Outlook's rule line included.
+check("cut at the header block, rule line left above it", content,
+      "Approving now.\n\n________________________________")
+check_true("history starts at the header block", hist.startswith("From:"))
 
 for label, body in [
     ("French De:/Envoyé:", "Bonjour.\n\nDe : Jane <j@acme.com>\nEnvoyé : 3 septembre 2026\nObjet : test\n\nvieux"),
@@ -138,7 +140,8 @@ cleaner.clean_messages(conn, log=lambda *a: None)
 
 rows = dict(conn.execute("SELECT msg_key, cleaned_content FROM messages"))
 check("outlook block: chain and disclaimer gone", rows["<a1@acme.com>"],
-      "Hi Carl,\n\nNumbers look fine to me. Approving now.\n\nJane")
+      "Hi Carl,\n\nNumbers look fine to me. Approving now.\n\nJane"
+      "\n\n________________________________")
 check("gmail marker: chain and wrapped disclaimer gone", rows["<b2@gs.com>"],
       "Thanks David - great to connect earlier. We are working on the comps and will revert.")
 check("wrapped marker + mobile signature gone", rows["<c3@humain.com>"],

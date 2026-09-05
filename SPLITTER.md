@@ -219,5 +219,5 @@ messages with no boundary found.
    Those stay unsplit, which is the correct outcome.
 3. **Attribution is best-effort.** Address usually available, date often not.
 4. **The boundary line itself** goes to `quoted_history`, not `content`.
-   Trailing blank lines and rule lines (`________`, `--------`) immediately
-   above the boundary go down with it, since Outlook draws one there.
+   Anything above it stays in `content`, including the `________` rule line
+   Outlook draws directly above its header block.

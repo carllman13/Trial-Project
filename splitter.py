@@ -29,9 +29,6 @@ SPLITTER_CODE_VERSION = 1
 MAX_JOIN = 3
 
 _ADDR = re.compile(r"<([^<>@\s]+@[^<>\s]+)>")
-# A line of nothing but rule characters. Outlook draws one above its reply
-# header block; it belongs with the history, not with what the sender wrote.
-_RULE_LINE = re.compile(r"^[\s_\-=*~]+$")
 
 # Seeded on first init. Each carries a real snippet it must cut at line 0.
 DEFAULT_PATTERNS = [
@@ -178,14 +175,9 @@ def split(body_text, patterns):
                     if not any(p.confirm.search(l) for l in window):
                         continue
                 addr = _ADDR.search(logical)
-                head, tail = lines[:i], lines[i:]
-                # Outlook's ______ rule sits just above its header block. Move
-                # any trailing rule or blank lines down with the history.
-                while head and (not head[-1].strip() or _RULE_LINE.match(head[-1])):
-                    tail.insert(0, head.pop())
                 return (
-                    textnorm.normalize("\n".join(head)),
-                    textnorm.normalize("\n".join(tail)),
+                    textnorm.normalize("\n".join(lines[:i])),
+                    textnorm.normalize("\n".join(lines[i:])),
                     p.pattern_id,
                     addr.group(1).lower() if addr else None,
                 )
