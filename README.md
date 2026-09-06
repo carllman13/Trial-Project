@@ -5,16 +5,20 @@ boilerplate, stores the result. Standard library only -- nothing to install,
 which matters on a locked-down work machine.
 
 ```
-python3 cli.py mail.db init                    # create tables, seed patterns
-python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
-python3 cli.py mail.db run                     # split, then clean
-python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 94 assertions
+python3 cli.py mail.db init                        # tables + default patterns
+python3 cli.py mail.db folders --rebuild           # read the tree from Outlook
+python3 cli.py mail.db select "Mailbox - Inbox" --recursive
+python3 cli.py mail.db refresh --hours 24          # scan the ticked folders
+python3 cli.py mail.db report                      # what fired, what never fires
+python3 cli.py mail.db runs                        # history, including failures
 ```
+
+Tests: `tests.py`, `test_folders.py`, `test_refresh.py`, `test_processing.py`.
+All run anywhere -- no Windows, no Outlook.
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
 
-`fetch` needs Windows, classic Outlook installed **and running with a
+`refresh` needs Windows, classic Outlook installed **and running with a
 logged-in profile**, reach to the company directory, and `pip install
 pywin32`. Resolving an address is a directory lookup, not a read of the
 message, so all four are required -- it cannot run on Linux or in a container.
@@ -22,7 +26,7 @@ Programmatic address access can also raise a security prompt or be blocked by
 group policy, so test on the managed work laptop rather than a personal
 machine.
 
-Everything after `fetch` is plain Python and SQLite, and runs anywhere.
+Everything after the fetch step is plain Python and SQLite, and runs anywhere.
 
 ## Repeat imports and folder moves
 
@@ -63,16 +67,62 @@ refresh. To run the repeat-import tests without Outlook:
 
 | File | Job |
 |---|---|
+| `sources.py` | the boundary: what refresh may assume about a mail system, plus a fake |
+| `outlook_com.py` | **the only file that imports win32com** |
+| `folders.py` | the folder tree, selection, per-folder watermarks |
+| `refresh.py` | one refresh operation; the run log |
 | `schema.sql` | The six tables |
 | `db.py` | Open, create schema, seed patterns, store a message |
 | `textnorm.py` | HTML -> text, whitespace normalisation |
 | `splitter.py` | Find where the quoted chain begins |
 | `cleaner.py` | Remove disclaimers |
 | `cli.py` | One entry point for every command |
-| `fetch.py` | Pull mail from classic Outlook via its automation interface |
 | `demo.py` | Fake mailbox with real-world marker formats |
 | `tests.py` | Assertions |
 | `SPLITTER.md` | Why the splitter works the way it does |
+
+## Refresh
+
+The UI offers three buttons; they differ only in where scanning starts, so
+there is one function and the caller decides:
+
+| Button | `since` |
+|---|---|
+| Cutoff, e.g. 0d 24h 0m | `now - delta` |
+| From last update time | each folder's own watermark |
+| From start | `None` |
+
+A fourth mode later -- "since a date", "last 7 days" -- needs no backend
+change. Folders that are not ticked are never scanned. A folder that has never
+been scanned resumes from the beginning even when its siblings have
+watermarks, so adding one folder does not force a full rescan of the rest.
+
+One folder failing does not end the run: the error is recorded against that
+folder and the others continue.
+
+## Structure
+
+Only `outlook_com.py` imports `win32com`, and it does so lazily inside one
+function. Everything else -- folders, refresh, splitting, cleaning, every test
+-- works with plain dicts through the `Source` interface in `sources.py`, so
+the whole project runs and is testable on any machine. `FakeSource` is an
+in-memory mailbox used by the tests.
+
+The backend never prints. `refresh()` reports through a `progress` callback
+and returns a result object, so a terminal and a UI are equal callers.
+
+Folder identity is cached as `(EntryID, StoreID)` so a later scan jumps
+straight to a folder instead of walking from the root. Those ids change when a
+folder is moved or renamed, so a failed lookup falls back to walking by path
+and re-caches.
+
+Every COM call is marshalled onto a single thread with a timeout, because COM
+objects belong to the apartment that created them; without this a
+multi-threaded UI fails intermittently while a CLI never does.
+
+A message already stored is recognised from its id alone -- one cheap property
+-- and its body and addresses are never read again. On a full rescan that is
+the difference between minutes and hours.
 
 ## Pipeline
 
@@ -111,6 +161,8 @@ textnorm.CODE_VERSION, so conversion changes cause stored bodies to be reprocess
 | Table | One row is |
 |---|---|
 | `messages` | one email actually delivered to the mailbox |
+| `folders` | one Outlook folder: its place in the tree, whether it is ticked, when it was last scanned |
+| `run_log` | one run of anything, so a failure survives as a row rather than as scrollback |
 | `participants` | one person on one email, with their role |
 | `boundary_patterns` | one quoted-chain marker format |
 | `disclaimer_patterns` | one piece of boilerplate to remove |

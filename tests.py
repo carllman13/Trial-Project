@@ -183,7 +183,7 @@ check("a pattern that misses its example is caught",
 print("\nfetch -- Outlook quirks, against stubs")
 import datetime as dt
 
-import fetch
+import outlook_com as fetch
 
 
 class Props:

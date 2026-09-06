@@ -101,3 +101,35 @@ CREATE TABLE IF NOT EXISTS sync_state (
     value       TEXT,
     updated_at  TEXT
 );
+
+-- The Outlook folder tree, cached here rather than in a side file so there is
+-- one source of truth. entry_id/store_id let a later scan jump straight to a
+-- folder instead of walking from the root; they change when a folder is moved
+-- or renamed, so a failed lookup falls back to walking by path.
+CREATE TABLE IF NOT EXISTS folders (
+    path              TEXT PRIMARY KEY,  -- 'Store - Parent - Child', threaded down
+    name              TEXT NOT NULL,
+    parent_path       TEXT,              -- NULL for a store root; lets the UI build a tree
+    entry_id          TEXT,
+    store_id          TEXT,
+    has_children      INTEGER DEFAULT 0, -- cheap Folders.Count, not a materialised walk
+    children_loaded   INTEGER DEFAULT 0, -- 0 = never expanded, so the UI knows to lazy-load
+    selected          INTEGER DEFAULT 0, -- unselected folders are never scanned
+    last_refreshed_at TEXT,              -- per-folder watermark for "since last update"
+    message_count     INTEGER,
+    seen_at           TEXT               -- last time Outlook still listed this folder
+);
+CREATE INDEX IF NOT EXISTS idx_folders_parent   ON folders(parent_path);
+CREATE INDEX IF NOT EXISTS idx_folders_selected ON folders(selected);
+
+-- One row per run of anything. Exists so a failure on a machine we cannot see
+-- survives as a queryable row rather than as terminal scrollback.
+CREATE TABLE IF NOT EXISTS run_log (
+    run_id      INTEGER PRIMARY KEY,
+    command     TEXT NOT NULL,           -- 'refresh', 'split', 'clean', ...
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    ok          INTEGER,                 -- 1 success, 0 failed, NULL still running
+    summary     TEXT,                    -- one line for the UI
+    detail      TEXT                     -- counts as JSON, or the error
+);

@@ -1,7 +1,12 @@
 """One entry point for the whole pipeline.
 
     python3 cli.py mail.db init            create tables, seed default patterns
-    python3 cli.py mail.db fetch           read mail from classic Outlook
+    python3 cli.py mail.db folders         show the folder tree and what is ticked
+    python3 cli.py mail.db folders --rebuild        re-read the tree from Outlook
+    python3 cli.py mail.db select "Mailbox - Inbox" --recursive
+    python3 cli.py mail.db refresh --hours 24       scan ticked folders
+    python3 cli.py mail.db refresh --since-last     resume each folder
+    python3 cli.py mail.db refresh --full           everything, no cutoff
     python3 cli.py mail.db demo            load a fake mailbox to try things on
     python3 cli.py mail.db split           find quoted chains
     python3 cli.py mail.db clean           strip disclaimers
@@ -18,6 +23,8 @@ import textwrap
 
 import cleaner
 import db as dbmod
+import folders
+import refresh
 import splitter
 
 
@@ -102,26 +109,94 @@ def cmd_unresolved(conn, limit=20, log=print):
     log("\n  sender names are still recorded, so you can identify who these are")
 
 
+def cmd_folders(conn, rebuild=False, stores=None, log=print):
+    """Show the tree. --rebuild re-reads it from Outlook; without it this is a
+    pure database read and never touches Outlook."""
+    if rebuild:
+        source = _outlook(stores)
+        n = folders.load_tree(conn, source,
+                              progress=lambda done, total, path: None)
+        log(f"read {n} folder(s) from Outlook")
+
+    def walk(parent, depth):
+        for f in folders.children_of(conn, parent):
+            tick = "[x]" if f["selected"] else "[ ]"
+            more = " ..." if f["has_children"] and not f["children_loaded"] else ""
+            when = f["last_refreshed_at"] or "never"
+            log(f"  {'  ' * depth}{tick} {f['name']:<28} {when}{more}")
+            walk(f["path"], depth + 1)
+
+    walk(None, 0)
+    sel = folders.selected(conn)
+    log(f"\n  {len(sel)} folder(s) ticked for refresh")
+    if sel:
+        log(f"  earliest refresh among them: "
+            f"{folders.earliest_refresh(conn) or 'never (a full scan is needed)'}")
+
+
+def cmd_refresh(conn, args, log=print):
+    """The three refresh buttons, which differ only in where scanning starts."""
+    paths = [f["path"] for f in folders.selected(conn)]
+    if not paths:
+        raise SystemExit("no folders ticked -- use `select` first")
+
+    if args.full:
+        since = None
+    elif args.since_last:
+        since = refresh.since_from_watermarks(conn, paths)
+    else:
+        since = refresh.since_from_cutoff(args.days, args.hours, args.minutes)
+        if since is None:
+            raise SystemExit(
+                "give a cutoff (--days/--hours/--minutes), or --since-last, "
+                "or --full")
+
+    source = _outlook(args.stores)
+    result = refresh.refresh(
+        conn, source, paths=paths, since=since, process=not args.no_process,
+        limit=args.limit,
+        progress=lambda done, total, label: log(f"  [{done}/{total}] {label}"))
+
+    log("\n" + result.summary())
+    for path, stats in result.folders.items():
+        log(f"  {path:<40} seen {stats['seen']:>5}  new {stats['stored']:>5}  "
+            f"moved {stats['moved']:>3}"
+            + (f"  ERROR {stats['error']}" if stats["error"] else ""))
+
+
+def _outlook(stores=None):
+    import outlook_com
+    allowed = [s.strip() for s in stores.split(",")] if stores else None
+    return outlook_com.ComSource(allowed_stores=allowed)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
-        "init", "fetch", "demo", "split", "clean", "run", "report",
+        "init", "folders", "select", "deselect", "refresh", "demo",
+        "split", "clean", "run", "report", "runs",
         "test-patterns", "unsplit", "list-unresolved"])
+    ap.add_argument("path", nargs="?", help="select/deselect: the folder path")
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
     ap.add_argument("--limit", type=int, default=None,
                     help="fetch: max messages checked, including existing ones; "
                          "unsplit/list-unresolved: samples to show")
-    ap.add_argument("--folder", help="fetch: folder path, e.g. 'Inbox/Clients'")
-    ap.add_argument("--recurse", action="store_true",
-                    help="fetch: include subfolders")
-    ap.add_argument("--since-days", type=int, default=30,
-                    help="fetch: how far back to look (0 for everything)")
-    ap.add_argument("--no-restrict", action="store_true",
-                    help="fetch: filter in Python instead of asking Outlook "
-                         "(slower, but immune to date-format trouble)")
+    ap.add_argument("--recursive", action="store_true",
+                    help="select/deselect: include every folder underneath")
+    ap.add_argument("--days", type=int, default=0, help="refresh: cutoff")
+    ap.add_argument("--hours", type=int, default=0, help="refresh: cutoff")
+    ap.add_argument("--minutes", type=int, default=0, help="refresh: cutoff")
+    ap.add_argument("--since-last", action="store_true",
+                    help="refresh: resume each folder from its own watermark")
+    ap.add_argument("--full", action="store_true",
+                    help="refresh: everything, ignoring cutoffs")
+    ap.add_argument("--no-process", action="store_true",
+                    help="refresh: fetch only, skip splitting and cleaning")
+    ap.add_argument("--stores", help="comma-separated top-level mailboxes to "
+                                     "walk; omit for all")
     args = ap.parse_args()
     if args.limit is not None and args.limit < 1:
         ap.error("--limit must be positive")
@@ -132,12 +207,21 @@ def main():
 
     conn = dbmod.connect(args.db)
     try:
-        if args.command == "fetch":
-            import fetch
-            fetch.fetch_messages(
-                conn, folder=args.folder, recurse=args.recurse,
-                since_days=args.since_days, use_restrict=not args.no_restrict,
-                limit=args.limit)
+        if args.command == "folders":
+            cmd_folders(conn, rebuild=args.rebuild, stores=args.stores)
+        elif args.command in ("select", "deselect"):
+            if not args.path:
+                ap.error(f"{args.command} needs a folder path")
+            n = folders.set_selected(conn, [args.path],
+                                     selected=args.command == "select",
+                                     recursive=args.recursive)
+            print(f"{args.command}ed {n} folder(s)")
+        elif args.command == "refresh":
+            cmd_refresh(conn, args)
+        elif args.command == "runs":
+            for r in refresh.recent_runs(conn, args.limit or 10):
+                mark = {1: "ok  ", 0: "FAIL", None: "... "}[r["ok"]]
+                print(f"  {mark} {r['started_at']}  {r['command']:<8} {r['summary'] or ''}")
         elif args.command == "demo":
             import demo
             demo.load(conn)
