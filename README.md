@@ -9,7 +9,7 @@ python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
 python3 cli.py mail.db run                     # split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 84 assertions
+python3 tests.py                               # 85 assertions
 ```
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
