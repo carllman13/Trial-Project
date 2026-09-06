@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
     received_time       TEXT,
     folder              TEXT,
     has_attachments     INTEGER,
+    recipients_dropped  INTEGER DEFAULT 0,  -- addresses Outlook would not resolve
 
     -- RAW
     body_raw            TEXT,              -- whole body, quoted chain included

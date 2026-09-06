@@ -256,6 +256,52 @@ check("address entry with nothing resolvable", fetch.smtp_from_address_entry(
       Obj({}, GetExchangeUser=lambda: None, Address=EX_PATH)), None)
 check("no address entry at all", fetch.smtp_from_address_entry(None), None)
 
+print("\nfetch -- directory lookups are cached")
+calls = {"n": 0}
+
+def counting_entry(addr, smtp):
+    """An AddressEntry that records how often the directory was asked."""
+    def lookup():
+        calls["n"] += 1
+        return Obj({}, PrimarySmtpAddress=smtp)
+    return Obj({}, AddressEntryUserType=0, GetExchangeUser=lookup, Address=addr)
+
+cache = {}
+for _ in range(5):                       # the same colleague, five messages
+    got = fetch.smtp_from_address_entry(counting_entry(EX_PATH, "jane@acme.com"), cache)
+check("cached lookup returns the address", got, "jane@acme.com")
+check("the directory is asked once, not five times", calls["n"], 1)
+
+calls["n"] = 0
+for _ in range(3):
+    fetch.smtp_from_address_entry(counting_entry(EX_PATH, "jane@acme.com"))
+check("without a cache every call is a round trip", calls["n"], 3)
+
+# Someone who has left will not resolve on a retry either.
+calls["n"] = 0
+gone = lambda: Obj({}, AddressEntryUserType=0,
+                   GetExchangeUser=lambda: None, Address="/O=EX/CN=GONE")
+cache = {}
+for _ in range(4):
+    check_true("departed user stays unresolved",
+               fetch.smtp_from_address_entry(gone(), cache) is None)
+check("a failed lookup is cached too", len(cache), 1)
+
+print("\nfetch -- entry type decides which lookup runs")
+tried = []
+dl = Obj({}, AddressEntryUserType=1,
+         GetExchangeUser=lambda: tried.append("user"),
+         GetExchangeDistributionList=lambda: (tried.append("dl") or
+                                              Obj({}, PrimarySmtpAddress="team@acme.com")),
+         Address="/O=EX/CN=TEAM")
+check("a group resolves via the distribution-list lookup",
+      fetch.smtp_from_address_entry(dl), "team@acme.com")
+check("the user lookup is not attempted for a group", tried, ["dl"])
+
+plain = Obj({}, AddressEntryUserType=30, Address="ds.ext@blackfuel.ai")
+check("a plain SMTP entry needs no directory lookup at all",
+      fetch.smtp_from_address_entry(plain), "ds.ext@blackfuel.ai")
+
 print("\nfetch -- times")
 aware = dt.datetime(2026, 9, 1, 9, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=2)))
 check("aware time converts to UTC", fetch.to_utc_iso(aware), "2026-09-01T07:14:00Z")
@@ -297,6 +343,8 @@ check("participants include sender and resolved recipients", sorted(parts), sort
 ]))
 check_true("unresolvable recipient is dropped, not stored as a path",
            all(not a.startswith("/") for _r, a, _n in parts))
+check("a dropped recipient is counted, not lost quietly",
+      msg["recipients_dropped"], 1)
 
 check("an item with no message id is skipped",
       fetch.message_from_item(Obj({}, SenderName="x")), None)
@@ -305,6 +353,52 @@ class NoHtml(Obj):
     HTMLBody = Exploding()
 check("plain-text item falls back to Body",
       fetch.body_of(NoHtml({}, Body="just text")), ("just text", "text"))
+
+print("\nfetch -- addresses are normalised and gaps are visible")
+conn = with_db()
+# The same person, as Outlook hands them over on two different messages.
+for i, addr in enumerate(("Jane.Patel@Acme.com", "jane.patel@acme.com")):
+    dbmod.store_message(conn, {"msg_key": f"<case{i}@x>", "sender_addr": addr,
+                               "sender_name": "Patel, Jane", "body_raw": "<p>a</p>"},
+                        [("from", addr, "Patel, Jane")])
+conn.commit()
+check("sender_addr is lowercased, so one person is one row",
+      [r[0] for r in conn.execute(
+          "SELECT DISTINCT sender_addr FROM messages ORDER BY sender_addr")],
+      ["jane.patel@acme.com"])
+check("participants agree with messages",
+      [r[0] for r in conn.execute(
+          "SELECT DISTINCT addr FROM participants WHERE role='from'")],
+      ["jane.patel@acme.com"])
+
+dbmod.store_message(conn, {"msg_key": "<gap@x>", "sender_addr": None,
+                           "sender_name": "Departed Colleague",
+                           "recipients_dropped": 3, "body_raw": "<p>a</p>"}, [])
+conn.commit()
+total, no_sender, dropped = conn.execute(
+    "SELECT COUNT(*), SUM(CASE WHEN sender_addr IS NULL THEN 1 ELSE 0 END), "
+    "SUM(recipients_dropped) FROM messages").fetchone()
+check("an unresolved sender is counted", no_sender, 1)
+check("dropped recipients are counted", dropped, 3)
+check("the sender name is still recorded, so the person is identifiable",
+      conn.execute("SELECT sender_name FROM messages WHERE sender_addr IS NULL"
+                   ).fetchone()[0], "Departed Colleague")
+
+print("\nmigration -- a database from an earlier version gains new columns")
+import re as _re, sqlite3 as _sq, tempfile as _tf
+_old = os.path.join(_tf.mkdtemp(), "old.db")
+_sql = open("schema.sql").read().replace(
+    "    recipients_dropped  INTEGER DEFAULT 0,"
+    "  -- addresses Outlook would not resolve\n", "")
+_c = _sq.connect(_old); _c.executescript(_sql)
+_c.execute("INSERT INTO messages (msg_key, sender_addr) VALUES ('<x@y>','a@b.com')")
+_c.commit(); _c.close()
+_c = dbmod.init(_old, log=lambda *a: None)
+check("the new column is added",
+      "recipients_dropped" in [r[1] for r in _c.execute("PRAGMA table_info(messages)")],
+      True)
+check("existing rows survive", _c.execute("SELECT msg_key FROM messages").fetchone()[0],
+      "<x@y>")
 
 print("\nfetch -- stored rows survive the pipeline")
 conn = with_db()
