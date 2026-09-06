@@ -9,7 +9,7 @@ python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
 python3 cli.py mail.db run                     # split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 77 assertions
+python3 tests.py                               # 84 assertions
 ```
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
@@ -130,6 +130,12 @@ changing date or reference number.
   see there is one more row to add.
 - A message that cleans to **empty** is named during the run. That almost
   always means a disclaimer pattern is too broad.
+- The **ADDRESSES** section counts senders Outlook would not resolve and
+  recipients that had to be dropped. `list-unresolved` shows which messages,
+  with the sender's display name, which is recorded even when the address is
+  not -- so you can still tell who they were. These are usually people who
+  have left the company, and only affect mail fetched after they left: a row
+  already in your database keeps its address permanently.
 
 ## Fetching, and what Outlook does to you
 

@@ -17,6 +17,9 @@ def connect(path):
 def init(path, log=print):
     """Create tables if missing and seed defaults. Safe to run repeatedly."""
     conn = connect(path)
+    # Before the schema, not after: schema.sql builds indexes over columns that
+    # an older database may not have yet, and would fail on the way past.
+    migrate(conn)
     with open(SCHEMA) as fh:
         conn.executescript(fh.read())
     added_b = seed_boundary_patterns(conn)
@@ -26,6 +29,20 @@ def init(path, log=print):
         + (f"; seeded {added_b} boundary pattern(s)" if added_b else "")
         + (f"; seeded {added_d} disclaimer pattern(s)" if added_d else ""))
     return conn
+
+
+def migrate(conn):
+    """Add columns that a database created by an earlier version is missing.
+
+    CREATE TABLE IF NOT EXISTS leaves an existing table alone, so new columns
+    have to be added by hand.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    if not have:
+        return                       # brand new database; schema.sql handles it
+    if "recipients_dropped" not in have:
+        conn.execute("ALTER TABLE messages ADD COLUMN recipients_dropped "
+                     "INTEGER DEFAULT 0")
 
 
 def seed_boundary_patterns(conn):
@@ -64,17 +81,24 @@ def store_message(conn, msg, participants=()):
     `msg` sets only RAW columns; the derived ones are left NULL so the
     splitter and cleaner pick the message up on their next run.
     """
+    row = {"conversation_id": None, "subject": None, "sender_name": None,
+           "sender_addr": None, "sent_time": None, "received_time": None,
+           "folder": None, "has_attachments": 0, "body_type": "html",
+           "recipients_dropped": 0, **msg}
+    # Lowercase here as well as in participants, or the same person shows up
+    # twice in SELECT DISTINCT sender_addr.
+    if row["sender_addr"]:
+        row["sender_addr"] = row["sender_addr"].lower()
     conn.execute(
         "INSERT OR REPLACE INTO messages "
         "(msg_key, conversation_id, subject, sender_name, sender_addr, "
-        " sent_time, received_time, folder, has_attachments, body_raw, "
-        " body_type, first_ingested) "
+        " sent_time, received_time, folder, has_attachments, "
+        " recipients_dropped, body_raw, body_type, first_ingested) "
         "VALUES (:msg_key, :conversation_id, :subject, :sender_name, "
         "        :sender_addr, :sent_time, :received_time, :folder, "
-        "        :has_attachments, :body_raw, :body_type, datetime('now'))",
-        {"conversation_id": None, "subject": None, "sender_name": None,
-         "sender_addr": None, "sent_time": None, "received_time": None,
-         "folder": None, "has_attachments": 0, "body_type": "html", **msg},
+        "        :has_attachments, :recipients_dropped, :body_raw, "
+        "        :body_type, datetime('now'))",
+        row,
     )
     conn.execute("DELETE FROM participants WHERE msg_key = ?", (msg["msg_key"],))
     conn.executemany(

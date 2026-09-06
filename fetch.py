@@ -148,15 +148,19 @@ def body_of(item):
 
 
 def participants_of(item, sender_name, sender_addr):
-    """[(role, addr, name), ...]. Recipients that will not resolve are skipped
-    rather than stored as directory paths."""
-    rows = []
+    """([(role, addr, name), ...], dropped_count).
+
+    A recipient whose address will not resolve is skipped rather than stored
+    as an /O=EXCHANGE directory path -- but it is counted, so the gap shows up
+    in `report` instead of disappearing quietly.
+    """
+    rows, dropped = [], 0
     if sender_addr:
         rows.append(("from", sender_addr, sender_name))
     try:
         recipients = list(item.Recipients)
     except Exception:
-        return rows
+        return rows, dropped
     for recipient in recipients:
         try:
             role = role_for(recipient.Type)
@@ -170,11 +174,13 @@ def participants_of(item, sender_name, sender_addr):
             if not addr:
                 addr = _prop(recipient, PR_SMTP_ADDRESS)
             if not addr:
+                dropped += 1
                 continue
             rows.append((role, addr, getattr(recipient, "Name", None)))
         except Exception:
+            dropped += 1
             continue
-    return rows
+    return rows, dropped
 
 
 def message_from_item(item, folder_path=None):
@@ -191,6 +197,7 @@ def message_from_item(item, folder_path=None):
     except Exception:
         name = None
     body, body_type = body_of(item)
+    participants, dropped = participants_of(item, name, addr)
 
     def attr(field, default=None):
         try:
@@ -208,10 +215,11 @@ def message_from_item(item, folder_path=None):
         "received_time": to_utc_iso(attr("ReceivedTime")),
         "folder": folder_path,
         "has_attachments": 1 if (attr("Attachments") and item.Attachments.Count) else 0,
+        "recipients_dropped": dropped,
         "body_raw": body,
         "body_type": body_type,
     }
-    return msg, participants_of(item, name, addr)
+    return msg, participants
 
 
 def restrict_filter(since):

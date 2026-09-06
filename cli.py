@@ -9,6 +9,7 @@
     python3 cli.py mail.db report          what fired, what did not
     python3 cli.py mail.db test-patterns   check patterns match their examples
     python3 cli.py mail.db unsplit         sample messages with no boundary
+    python3 cli.py mail.db list-unresolved messages with unresolved addresses
 
 Add --rebuild to redo every row, --dry-run to change nothing.
 """
@@ -37,6 +38,21 @@ def cmd_report(conn, log=print):
     ).fetchone()
     if total:
         log(f"\n  {unsplit or 0} of {total} split messages found no boundary")
+
+    total, no_sender, dropped, with_dropped = conn.execute(
+        "SELECT COUNT(*), "
+        "       SUM(CASE WHEN sender_addr IS NULL THEN 1 ELSE 0 END), "
+        "       COALESCE(SUM(recipients_dropped), 0), "
+        "       SUM(CASE WHEN recipients_dropped > 0 THEN 1 ELSE 0 END) "
+        "FROM messages").fetchone()
+    if total:
+        log("\nADDRESSES")
+        log(f"  messages with no sender address     {no_sender or 0:>6} of {total}")
+        log(f"  recipients Outlook would not resolve {dropped or 0:>5}"
+            f"  (across {with_dropped or 0} message(s))")
+        if no_sender or dropped:
+            log("  these are usually senders who have since left the company;")
+            log("  `list-unresolved` shows which messages they are")
 
     log("\nDISCLAIMER PATTERNS")
     log(f"  {'pattern':<38} {'msgs':>6} {'chars':>8}")
@@ -69,13 +85,30 @@ def cmd_unsplit(conn, limit=5, log=print):
         log("")
 
 
+def cmd_unresolved(conn, limit=20, log=print):
+    """Messages whose sender or recipients Outlook would not resolve."""
+    rows = conn.execute(
+        "SELECT msg_key, sent_time, sender_name, sender_addr, recipients_dropped "
+        "FROM messages WHERE sender_addr IS NULL OR recipients_dropped > 0 "
+        "ORDER BY sent_time LIMIT ?", (limit,)).fetchall()
+    if not rows:
+        log("every address resolved")
+        return
+    log(f"  {'sent':<12} {'sender name':<24} {'sender addr':<26} dropped")
+    log("  " + "-" * 74)
+    for msg_key, sent, name, addr, dropped in rows:
+        log(f"  {(sent or '')[:10]:<12} {(name or '')[:24]:<24} "
+            f"{(addr or '(none)')[:26]:<26} {dropped or 0}")
+    log("\n  sender names are still recorded, so you can identify who these are")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
         "init", "fetch", "demo", "split", "clean", "run", "report",
-        "test-patterns", "unsplit"])
+        "test-patterns", "unsplit", "list-unresolved"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
     ap.add_argument("--limit", type=int, default=5,
@@ -118,6 +151,8 @@ def main():
             raise SystemExit(1 if splitter.test_patterns(conn) else 0)
         elif args.command == "unsplit":
             cmd_unsplit(conn, args.limit)
+        elif args.command == "list-unresolved":
+            cmd_unresolved(conn, args.limit)
     finally:
         conn.close()
 
