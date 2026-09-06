@@ -9,13 +9,20 @@ python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
 python3 cli.py mail.db run                     # split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 85 assertions
+python3 tests.py                               # 96 assertions
 ```
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
 
-`fetch` needs Windows, classic Outlook running, and `pip install pywin32`.
-Everything after `fetch` is plain Python and SQLite.
+`fetch` needs Windows, classic Outlook installed **and running with a
+logged-in profile**, reach to the company directory, and `pip install
+pywin32`. Resolving an address is a directory lookup, not a read of the
+message, so all four are required -- it cannot run on Linux or in a container.
+Programmatic address access can also raise a security prompt or be blocked by
+group policy, so test on the managed work laptop rather than a personal
+machine.
+
+Everything after `fetch` is plain Python and SQLite, and runs anywhere.
 
 ## Files
 
@@ -154,6 +161,13 @@ half-matches junk.
 The internet message id is read through `PropertyAccessor` instead. Items
 without one (drafts, some calendar items) are skipped and counted.
 
+**Every address lookup is a directory round trip.** The same colleagues recur
+on message after message, so results are cached for the run -- failures
+included, since someone who has left will not resolve on a retry either.
+Without it a large mailbox takes hours. The entry's type is also checked
+before choosing which lookup to make, rather than trying both and catching the
+throw.
+
 **Times come back naive and local.** They are read as local and converted to
 UTC. Treating them as UTC would shift every timestamp, and by an extra hour
 across a DST boundary.
@@ -166,6 +180,11 @@ slower but immune.
 A single item that Outlook refuses to hand over is logged and skipped rather
 than ending the run; re-running is always safe, since `msg_key` is the primary
 key.
+
+`participants` describes the **top message only** -- the people Outlook lists
+on the item you received. Anyone appearing solely inside the quoted chain
+below is not in that table; their text lives in `quoted_history`. That is
+deliberate: those are paragraphs, not deliveries to your mailbox.
 
 Only RAW columns are written. `content` and `cleaned_content` are left NULL,
 which is what marks a message as needing work.

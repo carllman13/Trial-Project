@@ -1,8 +1,21 @@
 """Pull mail from classic Outlook on Windows into the database.
 
-Uses the Outlook desktop application's automation interface via pywin32, so:
-Windows only, Outlook must be installed and running, and nothing needs
-approving by IT.
+Uses the Outlook desktop application's automation interface via pywin32.
+
+What it needs, all four:
+
+    Windows                     these are COM methods on Outlook's object model
+    Outlook installed           no Outlook, no object model
+    a live, logged-in profile   resolving an address is a directory lookup,
+                                not a read of the message
+    reach to the same directory  or a synced offline address book -- this is
+                                what the /O=EXCHANGE pointers point at
+
+So it cannot run on a Linux box, in a container, or on any machine without
+Outlook. Nothing needs approving by IT, but note that programmatic access to
+address information can raise a security prompt, or be blocked outright by
+group policy on a managed machine. Test on the work laptop, not a personal
+one -- a clean run at home proves nothing about the managed build.
 
     pip install pywin32
     python3 cli.py mail.db fetch --since-days 30
@@ -27,6 +40,12 @@ PR_SMTP_ADDRESS        = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
 
 OL_MAIL_ITEM   = 43   # item.Class for a real email; skip everything else
 OL_FOLDER_INBOX = 6
+
+# AddressEntry.AddressEntryUserType. Branching on this beats calling both
+# lookups and catching the throw: each attempt is a directory round trip, and
+# an exception costs more than a comparison.
+OL_EXCHANGE_USER = 0
+OL_EXCHANGE_DL   = 1
 
 # Recipient.Type
 _ROLES = {1: "to", 2: "cc", 3: "bcc"}
@@ -72,23 +91,58 @@ def _prop(obj, tag):
     return value or None
 
 
-def smtp_from_address_entry(entry):
+def smtp_from_address_entry(entry, cache=None):
     """Resolve an AddressEntry to a real SMTP address.
 
     Exchange hands back a directory path rather than an address:
 
         /O=EXCHANGE/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=JSMITH
 
-    Three routes, because each fails on a different kind of recipient:
-    the SMTP property is absent on some entries, GetExchangeUser() returns
-    None for distribution lists, and neither exists for external addresses.
+    Several routes, because each fails on a different kind of recipient: the
+    SMTP property is absent on some entries, GetExchangeUser() returns None
+    for a group, and neither exists for external addresses.
+
+    `cache` maps directory path -> result for the run. Every lookup is a round
+    trip to the directory, and the same colleagues recur on message after
+    message, so without it a large mailbox takes hours. Failures are cached
+    too: someone who has left the company will not resolve on the retry
+    either.
     """
     if entry is None:
         return None
+    try:
+        key = entry.Address
+    except Exception:
+        key = None
+    if cache is not None and key in cache:
+        return cache[key]
+
+    addr = _resolve_address_entry(entry)
+    if cache is not None and key:
+        cache[key] = addr
+    return addr
+
+
+def _resolve_address_entry(entry):
     addr = _prop(entry, PR_SMTP_ADDRESS)
     if addr:
         return addr
-    for getter in ("GetExchangeUser", "GetExchangeDistributionList"):
+
+    # Ask the entry what it is rather than trying both lookups blindly.
+    try:
+        kind = entry.AddressEntryUserType
+    except Exception:
+        kind = None
+    if kind == OL_EXCHANGE_USER:
+        getters = ("GetExchangeUser",)
+    elif kind == OL_EXCHANGE_DL:
+        getters = ("GetExchangeDistributionList",)
+    elif kind is None:
+        getters = ("GetExchangeUser", "GetExchangeDistributionList")
+    else:
+        getters = ()          # contact, LDAP, plain SMTP: nothing to look up
+
+    for getter in getters:
         try:
             resolved = getattr(entry, getter)()
             if resolved is not None:
@@ -105,14 +159,14 @@ def smtp_from_address_entry(entry):
     return None if addr and addr.startswith("/") else (addr or None)
 
 
-def sender_address(item):
+def sender_address(item, cache=None):
     """The sender's SMTP address, resolved the same way."""
     addr = _prop(item, PR_SENDER_SMTP_ADDRESS)
     if addr:
         return addr
     try:
         if item.Sender is not None:
-            addr = smtp_from_address_entry(item.Sender)
+            addr = smtp_from_address_entry(item.Sender, cache)
             if addr:
                 return addr
     except Exception:
@@ -147,7 +201,7 @@ def body_of(item):
         return "", "text"
 
 
-def participants_of(item, sender_name, sender_addr):
+def participants_of(item, sender_name, sender_addr, cache=None):
     """([(role, addr, name), ...], dropped_count).
 
     A recipient whose address will not resolve is skipped rather than stored
@@ -170,7 +224,7 @@ def participants_of(item, sender_name, sender_addr):
                 entry = recipient.AddressEntry
             except Exception:
                 entry = None
-            addr = smtp_from_address_entry(entry)
+            addr = smtp_from_address_entry(entry, cache)
             if not addr:
                 addr = _prop(recipient, PR_SMTP_ADDRESS)
             if not addr:
@@ -183,7 +237,7 @@ def participants_of(item, sender_name, sender_addr):
     return rows, dropped
 
 
-def message_from_item(item, folder_path=None):
+def message_from_item(item, folder_path=None, cache=None):
     """One Outlook item to the dict db.store_message expects, or None to skip.
 
     Returns (message_dict, participants) so the caller can store both.
@@ -191,13 +245,13 @@ def message_from_item(item, folder_path=None):
     key = message_key(item)
     if not key:
         return None                       # drafts and some calendar items
-    addr = sender_address(item)
+    addr = sender_address(item, cache)
     try:
         name = item.SenderName
     except Exception:
         name = None
     body, body_type = body_of(item)
-    participants, dropped = participants_of(item, name, addr)
+    participants, dropped = participants_of(item, name, addr, cache)
 
     def attr(field, default=None):
         try:
@@ -287,6 +341,7 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
     if since_days:
         since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=since_days + 1)
 
+    cache = {}                      # directory path -> SMTP address, per run
     stored = skipped = failed = 0
     for current in _walk_folders(root, recurse):
         try:
@@ -310,7 +365,7 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
                 if item.Class != OL_MAIL_ITEM:
                     skipped += 1
                     continue
-                result = message_from_item(item, path)
+                result = message_from_item(item, path, cache)
                 if result is None:
                     skipped += 1
                     continue
@@ -340,6 +395,9 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
 
     conn.commit()
     log(f"stored {stored}; skipped {skipped} non-mail or keyless; {failed} failed")
+    if cache:
+        unresolved = sum(1 for v in cache.values() if not v)
+        log(f"  {len(cache)} distinct address(es) looked up, {unresolved} unresolved")
     if failed:
         log("  a failed item is usually one Outlook will not hand over; "
             "re-running is safe")

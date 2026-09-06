@@ -256,6 +256,52 @@ check("address entry with nothing resolvable", fetch.smtp_from_address_entry(
       Obj({}, GetExchangeUser=lambda: None, Address=EX_PATH)), None)
 check("no address entry at all", fetch.smtp_from_address_entry(None), None)
 
+print("\nfetch -- directory lookups are cached")
+calls = {"n": 0}
+
+def counting_entry(addr, smtp):
+    """An AddressEntry that records how often the directory was asked."""
+    def lookup():
+        calls["n"] += 1
+        return Obj({}, PrimarySmtpAddress=smtp)
+    return Obj({}, AddressEntryUserType=0, GetExchangeUser=lookup, Address=addr)
+
+cache = {}
+for _ in range(5):                       # the same colleague, five messages
+    got = fetch.smtp_from_address_entry(counting_entry(EX_PATH, "jane@acme.com"), cache)
+check("cached lookup returns the address", got, "jane@acme.com")
+check("the directory is asked once, not five times", calls["n"], 1)
+
+calls["n"] = 0
+for _ in range(3):
+    fetch.smtp_from_address_entry(counting_entry(EX_PATH, "jane@acme.com"))
+check("without a cache every call is a round trip", calls["n"], 3)
+
+# Someone who has left will not resolve on a retry either.
+calls["n"] = 0
+gone = lambda: Obj({}, AddressEntryUserType=0,
+                   GetExchangeUser=lambda: None, Address="/O=EX/CN=GONE")
+cache = {}
+for _ in range(4):
+    check_true("departed user stays unresolved",
+               fetch.smtp_from_address_entry(gone(), cache) is None)
+check("a failed lookup is cached too", len(cache), 1)
+
+print("\nfetch -- entry type decides which lookup runs")
+tried = []
+dl = Obj({}, AddressEntryUserType=1,
+         GetExchangeUser=lambda: tried.append("user"),
+         GetExchangeDistributionList=lambda: (tried.append("dl") or
+                                              Obj({}, PrimarySmtpAddress="team@acme.com")),
+         Address="/O=EX/CN=TEAM")
+check("a group resolves via the distribution-list lookup",
+      fetch.smtp_from_address_entry(dl), "team@acme.com")
+check("the user lookup is not attempted for a group", tried, ["dl"])
+
+plain = Obj({}, AddressEntryUserType=30, Address="ds.ext@blackfuel.ai")
+check("a plain SMTP entry needs no directory lookup at all",
+      fetch.smtp_from_address_entry(plain), "ds.ext@blackfuel.ai")
+
 print("\nfetch -- times")
 aware = dt.datetime(2026, 9, 1, 9, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=2)))
 check("aware time converts to UTC", fetch.to_utc_iso(aware), "2026-09-01T07:14:00Z")
