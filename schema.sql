@@ -27,9 +27,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- DERIVED by the splitter
     content             TEXT,              -- what this sender newly wrote
-    quoted_history      TEXT,              -- the chain below the boundary
     boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
-    quoted_from_addr    TEXT,              -- who wrote the quoted part, if the marker said
     splitter_version    INTEGER,
 
     -- DERIVED by the cleaner, from `content`

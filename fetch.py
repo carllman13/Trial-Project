@@ -20,7 +20,7 @@ one -- a clean run at home proves nothing about the managed build.
     pip install pywin32
     python3 cli.py mail.db fetch --since-days 30
 
-Only RAW columns are written. content / quoted_history / cleaned_content are
+Only RAW columns are written. content and cleaned_content are
 left NULL, which is exactly what marks a message as needing work -- the
 splitter and cleaner pick it up on their next run.
 

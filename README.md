@@ -9,7 +9,7 @@ python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
 python3 cli.py mail.db run                     # split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 96 assertions
+python3 tests.py                               # 92 assertions
 ```
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
@@ -48,8 +48,9 @@ fetch  ->  split  ->  clean
 **fetch** needs a running Outlook and happens once per message. It writes
 `body_raw` and nothing else derived.
 
-**split** cuts `body_raw` at the first quoted-chain marker into `content` (what
-this sender newly wrote) and `quoted_history`.
+**split** cuts `body_raw` at the first quoted-chain marker and keeps what is
+above it as `content` -- what this sender newly wrote. The chain below is
+dropped, since `body_raw` still holds it untouched.
 
 **clean** removes disclaimers from `content`, producing `cleaned_content`.
 
@@ -183,8 +184,8 @@ key.
 
 `participants` describes the **top message only** -- the people Outlook lists
 on the item you received. Anyone appearing solely inside the quoted chain
-below is not in that table; their text lives in `quoted_history`. That is
-deliberate: those are paragraphs, not deliveries to your mailbox.
+below is not in that table. That is deliberate: those are paragraphs inside a
+body, not deliveries to your mailbox.
 
 Only RAW columns are written. `content` and `cleaned_content` are left NULL,
 which is what marks a message as needing work.
