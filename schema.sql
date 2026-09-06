@@ -28,11 +28,15 @@ CREATE TABLE IF NOT EXISTS messages (
     -- DERIVED by the splitter
     content             TEXT,              -- what this sender newly wrote
     boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
+    -- Fingerprint of the enabled boundary patterns, so editing one restales
+    -- every row automatically. It folds in the matching code's own version as
+    -- well, so this number can also change when no pattern did -- rare, but it
+    -- is why the name is not a promise about patterns alone.
     boundary_patterns_version INTEGER,
 
     -- DERIVED by the cleaner, from `content`
     cleaned_content     TEXT,
-    cleaner_version     INTEGER,
+    cleaner_version     INTEGER,           -- same idea, for disclaimer patterns
 
     first_ingested      TEXT
 );
