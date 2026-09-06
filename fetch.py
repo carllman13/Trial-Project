@@ -326,13 +326,16 @@ def _resolve_folder(namespace, path):
 
 def fetch_messages(conn, folder=None, recurse=False, since_days=30,
                    use_restrict=True, limit=None, log=print):
-    """Walk Outlook and store every mail item found.
+    """Insert new mail; existing IDs only need a folder comparison.
 
     since_days windows the scan; the window is widened by a day on each run
     because Restrict compares in local time and messages arriving during a run
-    would otherwise be missed. Duplicates cost nothing -- msg_key is the
-    primary key.
+    would otherwise be missed. Existing bodies and participants are not read.
+    limit counts both new and existing eligible messages; return value counts
+    new inserts only. sync_state records scan time, not a resumable cursor.
     """
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
     namespace = _outlook_namespace()
     root = _resolve_folder(namespace, folder) if folder \
         else namespace.GetDefaultFolder(OL_FOLDER_INBOX)
@@ -342,7 +345,7 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
         since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=since_days + 1)
 
     cache = {}                      # directory path -> SMTP address, per run
-    stored = skipped = failed = 0
+    stored = moved = unchanged = processed = skipped = failed = 0
     for current in _walk_folders(root, recurse):
         try:
             path = current.FolderPath
@@ -359,26 +362,39 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
 
         count = 0
         for item in items:
-            if limit is not None and stored >= limit:
+            if limit is not None and processed >= limit:
                 break
             try:
                 if item.Class != OL_MAIL_ITEM:
                     skipped += 1
+                    continue
+                if since and not use_restrict:
+                    received = to_utc_iso(item.ReceivedTime)
+                    if received and received < since.strftime("%Y-%m-%dT%H:%M:%SZ"):
+                        continue
+                key = message_key(item)
+                if not key:
+                    skipped += 1
+                    continue
+                status = dbmod.update_existing_folder(conn, key, path)
+                if status is not None:
+                    moved += status == "moved"
+                    unchanged += status == "unchanged"
+                    processed += 1
+                    count += 1
+                    if processed % 200 == 0:
+                        conn.commit()
                     continue
                 result = message_from_item(item, path, cache)
                 if result is None:
                     skipped += 1
                     continue
                 msg, participants = result
-                if since and not use_restrict:
-                    # Restrict was skipped, so filter here instead.
-                    if msg["received_time"] and msg["received_time"] < \
-                            since.strftime("%Y-%m-%dT%H:%M:%SZ"):
-                        continue
                 dbmod.store_message(conn, msg, participants)
                 stored += 1
+                processed += 1
                 count += 1
-                if stored % 200 == 0:
+                if processed % 200 == 0:
                     conn.commit()          # so a crash does not lose the lot
                     log(f"  ... {stored} stored")
             except Exception as exc:
@@ -392,9 +408,12 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
              _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
         )
         log(f"  {path}: {count} message(s)")
+        if limit is not None and processed >= limit:
+            break
 
     conn.commit()
-    log(f"stored {stored}; skipped {skipped} non-mail or keyless; {failed} failed")
+    log(f"stored {stored} new; moved {moved}; unchanged {unchanged}; "
+        f"skipped {skipped} non-mail or keyless; {failed} failed")
     if cache:
         unresolved = sum(1 for v in cache.values() if not v)
         log(f"  {len(cache)} distinct address(es) looked up, {unresolved} unresolved")

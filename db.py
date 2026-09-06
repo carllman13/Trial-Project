@@ -78,12 +78,34 @@ def seed_disclaimer_patterns(conn):
     return added
 
 
+def update_existing_folder(conn, msg_key, folder):
+    """Return 'unchanged' or 'moved' for an existing message; None if new.
+
+    The first imported message is the archive record. Subsequent sightings
+    may update its location, but never its body, participants or derived data.
+    """
+    existing = conn.execute(
+        "SELECT folder FROM messages WHERE msg_key = ?", (msg_key,)
+    ).fetchone()
+    if existing is None:
+        return None
+    if folder is None or existing[0] == folder:
+        return "unchanged"  # no location supplied means no new information
+    conn.execute("UPDATE messages SET folder = ? WHERE msg_key = ?",
+                 (folder, msg_key))
+    return "moved"
+
+
 def store_message(conn, msg, participants=()):
-    """Insert or replace one message and its participants.
+    """Insert a new message, or update only an existing message's folder.
 
     `msg` sets only RAW columns; the derived ones are left NULL so the
-    splitter and cleaner pick the message up on their next run.
+    splitter and cleaner pick a new message up on their next run. Returns
+    'inserted', 'moved' or 'unchanged'. The caller owns the commit.
     """
+    status = update_existing_folder(conn, msg["msg_key"], msg.get("folder"))
+    if status is not None:
+        return status
     row = {"conversation_id": None, "subject": None, "sender_name": None,
            "sender_addr": None, "sent_time": None, "received_time": None,
            "folder": None, "has_attachments": 0, "body_type": "html",
@@ -92,21 +114,33 @@ def store_message(conn, msg, participants=()):
     # twice in SELECT DISTINCT sender_addr.
     if row["sender_addr"]:
         row["sender_addr"] = row["sender_addr"].lower()
-    conn.execute(
-        "INSERT OR REPLACE INTO messages "
-        "(msg_key, conversation_id, subject, sender_name, sender_addr, "
-        " sent_time, received_time, folder, has_attachments, "
-        " recipients_dropped, body_raw, body_type, first_ingested) "
-        "VALUES (:msg_key, :conversation_id, :subject, :sender_name, "
-        "        :sender_addr, :sent_time, :received_time, :folder, "
-        "        :has_attachments, :recipients_dropped, :body_raw, "
-        "        :body_type, datetime('now'))",
-        row,
-    )
-    conn.execute("DELETE FROM participants WHERE msg_key = ?", (msg["msg_key"],))
-    conn.executemany(
-        "INSERT OR IGNORE INTO participants (msg_key, role, addr, name) "
-        "VALUES (?,?,?,?)",
-        [(msg["msg_key"], role, addr.lower(), name)
-         for role, addr, name in participants],
-    )
+    # Build recipients before writing, then use a savepoint so a failed item
+    # cannot leave a partial row in a larger fetch transaction.
+    participant_rows = [(msg["msg_key"], role, addr.lower(), name)
+                        for role, addr, name in participants]
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    conn.execute("SAVEPOINT store_message")
+    try:
+        conn.execute(
+            "INSERT INTO messages "
+            "(msg_key, conversation_id, subject, sender_name, sender_addr, "
+            " sent_time, received_time, folder, has_attachments, "
+            " recipients_dropped, body_raw, body_type, first_ingested) "
+            "VALUES (:msg_key, :conversation_id, :subject, :sender_name, "
+            "        :sender_addr, :sent_time, :received_time, :folder, "
+            "        :has_attachments, :recipients_dropped, :body_raw, "
+            "        :body_type, datetime('now'))",
+            row,
+        )
+        conn.executemany(
+            "INSERT INTO participants (msg_key, role, addr, name) "
+            "VALUES (?,?,?,?) ON CONFLICT(msg_key, role, addr) DO NOTHING",
+            participant_rows,
+        )
+    except Exception:
+        conn.execute("ROLLBACK TO store_message")
+        raise
+    finally:
+        conn.execute("RELEASE store_message")
+    return "inserted"

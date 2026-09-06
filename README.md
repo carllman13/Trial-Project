@@ -24,6 +24,41 @@ machine.
 
 Everything after `fetch` is plain Python and SQLite, and runs anywhere.
 
+## Repeat imports and folder moves
+
+Each scan checks the Internet Message-ID (`msg_key`) and folder first:
+
+| What the scan finds | Database action |
+|---|---|
+| New ID | Insert the message and participants; process its body on the next `run` |
+| Existing ID, same folder | Leave the message row untouched |
+| Existing ID, different folder | Update `folder` only |
+
+For existing IDs, fetch does not read the body or resolve addresses. It preserves
+`first_ingested`, participants, raw and processed bodies, pattern versions, and
+disclaimer hits. Even a later local edit to the email does not overwrite the
+first imported version: this is an archive policy, not a claim that emails can
+never be edited. Previously unresolved addresses also remain as first imported.
+
+A full scan still enumerates Outlook items and reads their IDs, but does not
+reprocess existing content. Use `fetch --since-days 0` to include older messages
+whose folder may have changed; `--recurse` includes Inbox subfolders. A recent
+date cutoff cannot find an old message just because it moved recently.
+
+If the same ID appears in multiple folders (a copy), `folder` is the last
+location encountered by the scan, not a complete list of locations. Deletions
+are not mirrored. `sync_state` records scan timestamps, including limited scans;
+it is not currently used to resume from the previous refresh.
+
+`fetch --limit 5` checks at most five eligible messages, including ones already
+stored. Without `--limit`, all messages in the selected date/folder scope are
+checked. The summary reports new, moved, and unchanged counts separately.
+Other diagnostic commands still default to a small sample.
+
+Disclaimer changes need only `python cli.py mail.db clean`, with no Outlook
+refresh. To run the repeat-import tests without Outlook:
+`python -m unittest test_refresh.py`.
+
 ## Files
 
 | File | Job |

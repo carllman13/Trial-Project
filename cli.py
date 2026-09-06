@@ -111,8 +111,9 @@ def main():
         "test-patterns", "unsplit", "list-unresolved"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
-    ap.add_argument("--limit", type=int, default=5,
-                    help="fetch: stop after N messages; unsplit: samples to show")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="fetch: max messages checked, including existing ones; "
+                         "unsplit/list-unresolved: samples to show")
     ap.add_argument("--folder", help="fetch: folder path, e.g. 'Inbox/Clients'")
     ap.add_argument("--recurse", action="store_true",
                     help="fetch: include subfolders")
@@ -122,6 +123,8 @@ def main():
                     help="fetch: filter in Python instead of asking Outlook "
                          "(slower, but immune to date-format trouble)")
     args = ap.parse_args()
+    if args.limit is not None and args.limit < 1:
+        ap.error("--limit must be positive")
 
     if args.command == "init":
         dbmod.init(args.db)
@@ -134,7 +137,7 @@ def main():
             fetch.fetch_messages(
                 conn, folder=args.folder, recurse=args.recurse,
                 since_days=args.since_days, use_restrict=not args.no_restrict,
-                limit=args.limit if args.limit != 5 else None)
+                limit=args.limit)
         elif args.command == "demo":
             import demo
             demo.load(conn)
@@ -150,9 +153,9 @@ def main():
         elif args.command == "test-patterns":
             raise SystemExit(1 if splitter.test_patterns(conn) else 0)
         elif args.command == "unsplit":
-            cmd_unsplit(conn, args.limit)
+            cmd_unsplit(conn, args.limit if args.limit is not None else 5)
         elif args.command == "list-unresolved":
-            cmd_unresolved(conn, args.limit)
+            cmd_unresolved(conn, args.limit if args.limit is not None else 20)
     finally:
         conn.close()
 
