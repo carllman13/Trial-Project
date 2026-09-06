@@ -52,17 +52,16 @@ REAL_MARKERS = [
 ]
 for label, marker, want_addr in REAL_MARKERS:
     body = f"My new reply here.\n\n{marker}\n> older text"
-    content, hist, pid, addr = splitter.split(body, pats)
+    content, pid = splitter.split(body, pats)
     check(f"{label}: content", content, "My new reply here.")
-    check(f"{label}: address", addr, want_addr)
-    check_true(f"{label}: history kept", hist.startswith("On "))
+    check_true(f"{label}: a boundary was found", pid is not None)
 
 print("\nsplitter -- wrapping")
 # The HTML-to-text converter wraps long markers. Matching line-by-line misses.
 wrapped = ("Many thanks Carl, that's very helpful.\n\n"
            "On September 4, 2026 at 10:08:08 PM GMT+5, Bader Al Hussain CFA,\n"
            "CAIA <BAlhussain@humain.com> wrote:\nolder text")
-content, _h, pid, _a = splitter.split(wrapped, pats)
+content, pid = splitter.split(wrapped, pats)
 check("wrapped marker across 2 lines", content, "Many thanks Carl, that's very helpful.")
 
 # A fixed 3-line join would break this one: the window would run past `wrote:`
@@ -70,7 +69,7 @@ check("wrapped marker across 2 lines", content, "Many thanks Carl, that's very h
 unwrapped = ("Noted.\n"
              "On Fri, 7 Aug 2026 at 20:39, Khalil, Adam <Adam.Khalil@gs.com> wrote:\n"
              "> old stuff")
-content, _h, _p, _a = splitter.split(unwrapped, pats)
+content, _p = splitter.split(unwrapped, pats)
 check("unwrapped marker followed by text", content, "Noted.")
 
 print("\nsplitter -- Outlook's own header block")
@@ -79,18 +78,17 @@ outlook = ("Approving now.\n\n"
            "Sent: 03 September 2026 08:30\n"
            "To: Carl Wei\n"
            "Subject: RE: vendor onboarding\n\nolder")
-content, _h, pid, _a = splitter.split(outlook, pats)
+content, pid = splitter.split(outlook, pats)
 check("From:/Sent: block", content, "Approving now.")
 
 separator = ("Approving now.\n\n"
              "________________________________\n"
              "From: Jane Patel <jane.patel@acme.com>\n"
              "Sent: 03 September 2026 08:30\n\nolder")
-content, hist, _p, _a = splitter.split(separator, pats)
+content, _p = splitter.split(separator, pats)
 # Everything above the boundary stays in content, Outlook's rule line included.
 check("cut at the header block, rule line left above it", content,
       "Approving now.\n\n________________________________")
-check_true("history starts at the header block", hist.startswith("From:"))
 
 for label, body in [
     ("French De:/Envoyé:", "Bonjour.\n\nDe : Jane <j@acme.com>\nEnvoyé : 3 septembre 2026\nObjet : test\n\nvieux"),
@@ -98,7 +96,7 @@ for label, body in [
     ("Original Message", "Hi.\n\n----- Original Message -----\nFrom: someone\n\nold"),
     ("Forwarded message", "Hi.\n\n---------- Forwarded message ----------\nFrom: someone\n\nold"),
 ]:
-    content, _h, pid, _a = splitter.split(body, pats)
+    content, pid = splitter.split(body, pats)
     check_true(f"{label} cuts", pid is not None)
 
 print("\nsplitter -- must NOT cut")
@@ -109,7 +107,7 @@ for label, body in [
     ("quoted lines alone", "> some quoted text\n> more quoted text"),
     ("single > in prose", "Use x > y as the filter.\nThat is all."),
 ]:
-    content, hist, pid, _a = splitter.split(body, pats)
+    content, pid = splitter.split(body, pats)
     check(f"{label}: no boundary", pid, None)
     check(f"{label}: body intact", content, textnorm.normalize(body))
 
@@ -384,7 +382,7 @@ check("the sender name is still recorded, so the person is identifiable",
       conn.execute("SELECT sender_name FROM messages WHERE sender_addr IS NULL"
                    ).fetchone()[0], "Departed Colleague")
 
-print("\nmigration -- a database from an earlier version gains new columns")
+print("\nmigration -- a database from an earlier version is brought forward")
 import re as _re, sqlite3 as _sq, tempfile as _tf
 _old = os.path.join(_tf.mkdtemp(), "old.db")
 _sql = open("schema.sql").read().replace(
@@ -400,13 +398,27 @@ check("the new column is added",
 check("existing rows survive", _c.execute("SELECT msg_key FROM messages").fetchone()[0],
       "<x@y>")
 
+# splitter_version was renamed; an existing database keeps its values.
+_old2 = os.path.join(_tf.mkdtemp(), "old2.db")
+_sql2 = open("schema.sql").read().replace(
+    "boundary_patterns_version", "splitter_version")
+_c2 = _sq.connect(_old2); _c2.executescript(_sql2)
+_c2.execute("INSERT INTO messages (msg_key, splitter_version) VALUES ('<r@n>', 42)")
+_c2.commit(); _c2.close()
+_c2 = dbmod.init(_old2, log=lambda *a: None)
+check("the old splitter_version column is renamed",
+      "boundary_patterns_version" in
+      [r[1] for r in _c2.execute("PRAGMA table_info(messages)")], True)
+check("its values are carried over, not reset",
+      _c2.execute("SELECT boundary_patterns_version FROM messages").fetchone()[0], 42)
+
 print("\nfetch -- stored rows survive the pipeline")
 conn = with_db()
 msg, parts = fetch.message_from_item(item, folder_path="Inbox")
 dbmod.store_message(conn, msg, parts)
 conn.commit()
 check("derived columns start NULL so the splitter picks it up",
-      conn.execute("SELECT content, cleaned_content, splitter_version "
+      conn.execute("SELECT content, cleaned_content, boundary_patterns_version "
                    "FROM messages").fetchone(), (None, None, None))
 splitter.split_messages(conn, log=lambda *a: None)
 cleaner.clean_messages(conn, log=lambda *a: None)

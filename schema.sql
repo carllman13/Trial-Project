@@ -27,19 +27,21 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- DERIVED by the splitter
     content             TEXT,              -- what this sender newly wrote
-    quoted_history      TEXT,              -- the chain below the boundary
     boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
-    quoted_from_addr    TEXT,              -- who wrote the quoted part, if the marker said
-    splitter_version    INTEGER,
+    -- Fingerprint of the enabled boundary patterns, so editing one restales
+    -- every row automatically. It folds in the matching code's own version as
+    -- well, so this number can also change when no pattern did -- rare, but it
+    -- is why the name is not a promise about patterns alone.
+    boundary_patterns_version INTEGER,
 
     -- DERIVED by the cleaner, from `content`
     cleaned_content     TEXT,
-    cleaner_version     INTEGER,
+    cleaner_version     INTEGER,           -- same idea, for disclaimer patterns
 
     first_ingested      TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_unsplit  ON messages(splitter_version);
+CREATE INDEX IF NOT EXISTS idx_messages_unsplit  ON messages(boundary_patterns_version);
 CREATE INDEX IF NOT EXISTS idx_messages_unclean  ON messages(cleaner_version);
 CREATE INDEX IF NOT EXISTS idx_messages_sent     ON messages(sent_time);
 

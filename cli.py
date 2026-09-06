@@ -34,7 +34,7 @@ def cmd_report(conn, log=print):
 
     total, unsplit = conn.execute(
         "SELECT COUNT(*), SUM(CASE WHEN boundary_pattern_id IS NULL THEN 1 ELSE 0 END) "
-        "FROM messages WHERE splitter_version IS NOT NULL"
+        "FROM messages WHERE boundary_patterns_version IS NOT NULL"
     ).fetchone()
     if total:
         log(f"\n  {unsplit or 0} of {total} split messages found no boundary")
@@ -71,7 +71,7 @@ def cmd_unsplit(conn, limit=5, log=print):
     """Show messages no pattern matched. Each distinct marker is one new row."""
     rows = conn.execute(
         "SELECT msg_key, subject, content FROM messages "
-        "WHERE splitter_version IS NOT NULL AND boundary_pattern_id IS NULL "
+        "WHERE boundary_patterns_version IS NOT NULL AND boundary_pattern_id IS NULL "
         "LIMIT ?", (limit,)
     ).fetchall()
     if not rows:

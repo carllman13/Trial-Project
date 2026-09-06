@@ -1,9 +1,10 @@
 """Find where the quoted chain begins, so the sender's new text stands alone.
 
 Only the FIRST boundary matters: a message ends where the next one begins.
-Everything above it is `content`, everything from it down is `quoted_history`.
-Finding no boundary is a normal outcome, not an error -- the unsplit messages
-are the to-do list of marker formats still to add.
+Everything above it is `content`; the chain below is dropped, since `body_raw`
+still holds it untouched. Finding no boundary is a normal outcome, not an
+error -- the unsplit messages are the to-do list of marker formats still to
+add.
 
 Markers are recognised by their FRAME, never parsed. Real examples:
 
@@ -27,8 +28,6 @@ SPLITTER_CODE_VERSION = 1
 # 1 line, then 2 joined, then 3. Trying 1 first is what keeps an unwrapped
 # marker from being ruined by body text on the following line.
 MAX_JOIN = 3
-
-_ADDR = re.compile(r"<([^<>@\s]+@[^<>\s]+)>")
 
 # Seeded on first init. Each carries a real snippet it must cut at line 0.
 DEFAULT_PATTERNS = [
@@ -131,10 +130,13 @@ def load_patterns(db):
 
 
 def fingerprint(patterns):
-    """Identity of this splitter setup: code version plus the exact pattern set.
+    """Identity of the boundary-pattern set, plus the code that applies it.
 
-    Stored on each message. Change a pattern and every message goes stale and
-    re-splits on the next run -- no version number to remember to bump.
+    Stored on each message as boundary_patterns_version. Add, edit or disable
+    a pattern and the number changes, so every message goes stale and
+    re-splits on the next run -- nothing to remember to bump. The code version
+    is folded in as well, so a change to the matching logic itself also
+    restales every row.
     """
     seed = str(SPLITTER_CODE_VERSION) + "|" + "|".join(
         "{}:{}:{}:{}".format(
@@ -148,14 +150,14 @@ def fingerprint(patterns):
 
 
 def split(body_text, patterns):
-    """Cut a body at its first boundary.
+    """Cut a body at its first boundary, keeping only what is above it.
 
-    Returns (content, quoted_history, pattern_id, quoted_from_addr).
-    pattern_id is None when no boundary was found, and the whole body is
-    content.
+    Returns (content, pattern_id). pattern_id is None when no boundary was
+    found, in which case the whole body is content. The chain below the cut is
+    discarded -- body_raw still holds it, so nothing is lost.
     """
     if not body_text:
-        return "", "", None, None
+        return "", None
 
     lines = body_text.split("\n")
     for i in range(len(lines)):
@@ -174,14 +176,8 @@ def split(body_text, patterns):
                     window = lines[i + span : i + span + p.confirm_within]
                     if not any(p.confirm.search(l) for l in window):
                         continue
-                addr = _ADDR.search(logical)
-                return (
-                    textnorm.normalize("\n".join(lines[:i])),
-                    textnorm.normalize("\n".join(lines[i:])),
-                    p.pattern_id,
-                    addr.group(1).lower() if addr else None,
-                )
-    return textnorm.normalize(body_text), "", None, None
+                return textnorm.normalize("\n".join(lines[:i])), p.pattern_id
+    return textnorm.normalize(body_text), None
 
 
 def split_messages(db, rebuild=False, dry_run=False, log=print):
@@ -198,7 +194,7 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
 
     version = fingerprint(patterns)
     where = "" if rebuild else \
-        "AND (splitter_version IS NULL OR splitter_version != :v)"
+        "AND (boundary_patterns_version IS NULL OR boundary_patterns_version != :v)"
     rows = db.execute(
         f"SELECT msg_key, body_raw, body_type FROM messages "
         f"WHERE body_raw IS NOT NULL {where}", {"v": version}
@@ -211,17 +207,16 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
     unsplit = 0
     for msg_key, body_raw, body_type in rows:
         text = textnorm.to_text(body_raw, body_type)
-        content, history, pattern_id, addr = split(text, patterns)
+        content, pattern_id = split(text, patterns)
         if pattern_id is None:
             unsplit += 1
         if dry_run:
             continue
         db.execute(
-            "UPDATE messages SET content = ?, quoted_history = ?, "
-            "       boundary_pattern_id = ?, quoted_from_addr = ?, "
-            "       splitter_version = ?, cleaner_version = NULL "
+            "UPDATE messages SET content = ?, boundary_pattern_id = ?, "
+            "       boundary_patterns_version = ?, cleaner_version = NULL "
             "WHERE msg_key = ?",
-            (content, history, pattern_id, addr, version, msg_key),
+            (content, pattern_id, version, msg_key),
         )
     if not dry_run:
         db.commit()
@@ -253,7 +248,7 @@ def test_patterns(db, log=print):
             log(f"  FAIL {label}: regex does not compile: {exc}")
             failures += 1
             continue
-        content, _hist, pattern_id, _addr = split(example, [pattern])
+        content, pattern_id = split(example, [pattern])
         if pattern_id is None:
             log(f"  FAIL {label}: does not match its own example")
             failures += 1
