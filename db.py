@@ -43,6 +43,9 @@ def migrate(conn):
     if "recipients_dropped" not in have:
         conn.execute("ALTER TABLE messages ADD COLUMN recipients_dropped "
                      "INTEGER DEFAULT 0")
+    if "splitter_version" in have and "boundary_patterns_version" not in have:
+        conn.execute("ALTER TABLE messages RENAME COLUMN splitter_version "
+                     "TO boundary_patterns_version")
 
 
 def seed_boundary_patterns(conn):

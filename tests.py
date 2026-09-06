@@ -382,7 +382,7 @@ check("the sender name is still recorded, so the person is identifiable",
       conn.execute("SELECT sender_name FROM messages WHERE sender_addr IS NULL"
                    ).fetchone()[0], "Departed Colleague")
 
-print("\nmigration -- a database from an earlier version gains new columns")
+print("\nmigration -- a database from an earlier version is brought forward")
 import re as _re, sqlite3 as _sq, tempfile as _tf
 _old = os.path.join(_tf.mkdtemp(), "old.db")
 _sql = open("schema.sql").read().replace(
@@ -398,13 +398,27 @@ check("the new column is added",
 check("existing rows survive", _c.execute("SELECT msg_key FROM messages").fetchone()[0],
       "<x@y>")
 
+# splitter_version was renamed; an existing database keeps its values.
+_old2 = os.path.join(_tf.mkdtemp(), "old2.db")
+_sql2 = open("schema.sql").read().replace(
+    "boundary_patterns_version", "splitter_version")
+_c2 = _sq.connect(_old2); _c2.executescript(_sql2)
+_c2.execute("INSERT INTO messages (msg_key, splitter_version) VALUES ('<r@n>', 42)")
+_c2.commit(); _c2.close()
+_c2 = dbmod.init(_old2, log=lambda *a: None)
+check("the old splitter_version column is renamed",
+      "boundary_patterns_version" in
+      [r[1] for r in _c2.execute("PRAGMA table_info(messages)")], True)
+check("its values are carried over, not reset",
+      _c2.execute("SELECT boundary_patterns_version FROM messages").fetchone()[0], 42)
+
 print("\nfetch -- stored rows survive the pipeline")
 conn = with_db()
 msg, parts = fetch.message_from_item(item, folder_path="Inbox")
 dbmod.store_message(conn, msg, parts)
 conn.commit()
 check("derived columns start NULL so the splitter picks it up",
-      conn.execute("SELECT content, cleaned_content, splitter_version "
+      conn.execute("SELECT content, cleaned_content, boundary_patterns_version "
                    "FROM messages").fetchone(), (None, None, None))
 splitter.split_messages(conn, log=lambda *a: None)
 cleaner.clean_messages(conn, log=lambda *a: None)

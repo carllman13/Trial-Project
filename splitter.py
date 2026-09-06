@@ -130,10 +130,13 @@ def load_patterns(db):
 
 
 def fingerprint(patterns):
-    """Identity of this splitter setup: code version plus the exact pattern set.
+    """Identity of the boundary-pattern set, plus the code that applies it.
 
-    Stored on each message. Change a pattern and every message goes stale and
-    re-splits on the next run -- no version number to remember to bump.
+    Stored on each message as boundary_patterns_version. Add, edit or disable
+    a pattern and the number changes, so every message goes stale and
+    re-splits on the next run -- nothing to remember to bump. The code version
+    is folded in as well, so a change to the matching logic itself also
+    restales every row.
     """
     seed = str(SPLITTER_CODE_VERSION) + "|" + "|".join(
         "{}:{}:{}:{}".format(
@@ -191,7 +194,7 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
 
     version = fingerprint(patterns)
     where = "" if rebuild else \
-        "AND (splitter_version IS NULL OR splitter_version != :v)"
+        "AND (boundary_patterns_version IS NULL OR boundary_patterns_version != :v)"
     rows = db.execute(
         f"SELECT msg_key, body_raw, body_type FROM messages "
         f"WHERE body_raw IS NOT NULL {where}", {"v": version}
@@ -211,7 +214,7 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
             continue
         db.execute(
             "UPDATE messages SET content = ?, boundary_pattern_id = ?, "
-            "       splitter_version = ?, cleaner_version = NULL "
+            "       boundary_patterns_version = ?, cleaner_version = NULL "
             "WHERE msg_key = ?",
             (content, pattern_id, version, msg_key),
         )

@@ -9,7 +9,7 @@ python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
 python3 cli.py mail.db run                     # split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
-python3 tests.py                               # 92 assertions
+python3 tests.py                               # 94 assertions
 ```
 
 Or without Outlook, to see it work: `python3 cli.py mail.db demo` then `run`.
@@ -64,8 +64,8 @@ invalidates cleaning automatically.
 
 ## Staleness handles itself
 
-`splitter_version` and `cleaner_version` each store a fingerprint of the code
-plus the exact set of enabled patterns. Add, edit or disable a pattern and every
+`boundary_patterns_version` and `cleaner_version` each store a fingerprint of
+the enabled pattern set, plus the code that applies it. Add, edit or disable a pattern and every
 affected message stops matching its stored fingerprint, so the next run redoes
 it. There is no version number to remember to bump and no refresh flag to
 remember to pass.

@@ -160,13 +160,13 @@ Add to `messages`:
 content              TEXT     -- above the boundary          [derived]
 quoted_history       TEXT     -- from the boundary down      [derived]
 boundary_pattern_id  INTEGER  -- which pattern cut it; NULL = unsplit
-splitter_version     INTEGER  -- fingerprint, see below
+boundary_patterns_version     INTEGER  -- fingerprint, see below
 ```
 
 `body_raw` is never modified. Everything above is derived and rebuilt on
 demand, exactly like `cleaned_content`.
 
-`splitter_version` is a fingerprint of the splitter code version plus the exact
+`boundary_patterns_version` is a fingerprint of the splitter code version plus the exact
 set of enabled patterns (same approach as `cleaner_fingerprint`). Add, edit or
 disable a pattern and every message goes stale automatically and re-splits on
 the next run. Nothing to remember to bump.

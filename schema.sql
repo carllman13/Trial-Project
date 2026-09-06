@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS messages (
     -- DERIVED by the splitter
     content             TEXT,              -- what this sender newly wrote
     boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
-    splitter_version    INTEGER,
+    boundary_patterns_version INTEGER,
 
     -- DERIVED by the cleaner, from `content`
     cleaned_content     TEXT,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS messages (
     first_ingested      TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_unsplit  ON messages(splitter_version);
+CREATE INDEX IF NOT EXISTS idx_messages_unsplit  ON messages(boundary_patterns_version);
 CREATE INDEX IF NOT EXISTS idx_messages_unclean  ON messages(cleaner_version);
 CREATE INDEX IF NOT EXISTS idx_messages_sent     ON messages(sent_time);
 
