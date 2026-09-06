@@ -5,12 +5,13 @@ sits inside the sender's own new text, not in the quoted chain.
 
 Entirely local: no network, no Outlook. Safe to re-run as often as you like.
 """
+import json
 import re
 import zlib
 
 import textnorm
 
-CLEANER_CODE_VERSION = 1
+CLEANER_CODE_VERSION = 2
 
 DEFAULT_PATTERNS = [
     ("Mobile signature (iPhone)", "Sent from my iPhone", "literal"),
@@ -36,7 +37,7 @@ def build_matcher(pattern_text, kind="literal"):
 
 
 def load_patterns(db):
-    """Enabled patterns, compiled. Malformed ones are reported, not fatal."""
+    """Return compiled enabled patterns and errors; callers decide whether to proceed."""
     usable, broken = [], []
     for pattern_id, label, text, kind in db.execute(
         "SELECT pattern_id, label, pattern_text, kind FROM disclaimer_patterns "
@@ -54,17 +55,19 @@ def fingerprint(patterns):
 
     Add, edit or disable a pattern and every message goes stale automatically.
     """
-    seed = str(CLEANER_CODE_VERSION) + "|" + "|".join(
-        f"{pid}:{matcher.pattern}" for pid, _label, matcher in patterns
-    )
-    return zlib.crc32(seed.encode()) & 0x7FFFFFFF
+    settings = [
+        CLEANER_CODE_VERSION, textnorm.CODE_VERSION,
+        [[pid, matcher.pattern, matcher.flags] for pid, _label, matcher in patterns],
+    ]
+    seed = json.dumps(settings, ensure_ascii=True, separators=(",", ":"))
+    return zlib.crc32(seed.encode("utf-8")) & 0x7FFFFFFF
 
 
 def clean_text(content, patterns):
     """Remove every enabled disclaimer from one message.
 
-    Returns (cleaned, [(pattern_id, chars_removed), ...]). Patterns are
-    independent, so the order they are applied in does not matter.
+    Returns (cleaned, [(pattern_id, chars_removed), ...]).
+    Patterns run in database order; overlapping matches can depend on that order.
     """
     if not content:
         return "", []
@@ -82,9 +85,9 @@ def clean_messages(db, rebuild=False, dry_run=False, log=print):
     patterns, broken = load_patterns(db)
     for pattern_id, label, err in broken:
         log(f"  ! pattern {pattern_id} ({label}) failed to compile: {err}")
-    if not patterns:
-        log("no usable disclaimer patterns; nothing to do")
-        return 0
+    if broken:
+        raise ValueError("Invalid disclaimer patterns; fix or disable them before cleaning.")
+    # An empty enabled set restores content and removes old hit records.
 
     version = fingerprint(patterns)
     where = "" if rebuild else \

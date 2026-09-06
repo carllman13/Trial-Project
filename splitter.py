@@ -15,6 +15,7 @@ Markers are recognised by their FRAME, never parsed. Real examples:
 Dates, names and credentials all vary; commas appear inside names. One loose
 regex over the frame handles every one of them.
 """
+import json
 import re
 import zlib
 
@@ -22,7 +23,7 @@ import textnorm
 
 # Bump when the matching logic changes. Pattern edits are picked up
 # automatically via the fingerprint.
-SPLITTER_CODE_VERSION = 1
+SPLITTER_CODE_VERSION = 2
 
 # A wrapped marker spans more than one line, so each position is tried as
 # 1 line, then 2 joined, then 3. Trying 1 first is what keeps an unwrapped
@@ -114,7 +115,7 @@ class Pattern:
 
 
 def load_patterns(db):
-    """Enabled patterns, compiled. Malformed ones are reported, not fatal."""
+    """Return compiled enabled patterns and errors; callers decide whether to proceed."""
     usable, broken = [], []
     rows = db.execute(
         "SELECT pattern_id, label, line_regex, require_regex, confirm_regex, "
@@ -138,15 +139,18 @@ def fingerprint(patterns):
     is folded in as well, so a change to the matching logic itself also
     restales every row.
     """
-    seed = str(SPLITTER_CODE_VERSION) + "|" + "|".join(
-        "{}:{}:{}:{}".format(
-            p.pattern_id, p.line.pattern,
-            p.require.pattern if p.require else "",
-            p.confirm.pattern if p.confirm else "",
-        )
-        for p in patterns
-    )
-    return zlib.crc32(seed.encode()) & 0x7FFFFFFF
+    # JSON preserves field boundaries; include every matching input.
+    def regex_key(regex):
+        return [regex.pattern, regex.flags] if regex is not None else None
+
+    settings = [
+        SPLITTER_CODE_VERSION, textnorm.CODE_VERSION, MAX_JOIN,
+        [[p.pattern_id, p.priority, p.confirm_within,
+          regex_key(p.line), regex_key(p.require), regex_key(p.confirm)]
+         for p in patterns],
+    ]
+    seed = json.dumps(settings, ensure_ascii=True, separators=(",", ":"))
+    return zlib.crc32(seed.encode("utf-8")) & 0x7FFFFFFF
 
 
 def split(body_text, patterns):
@@ -188,9 +192,9 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
     patterns, broken = load_patterns(db)
     for pattern_id, label, err in broken:
         log(f"  ! pattern {pattern_id} ({label}) failed to compile: {err}")
-    if not patterns:
-        log("no usable boundary patterns; nothing to do")
-        return 0
+    if broken:
+        raise ValueError("Invalid boundary patterns; fix or disable them before splitting.")
+    # An empty enabled set is valid: retain the full normalized body.
 
     version = fingerprint(patterns)
     where = "" if rebuild else \
@@ -214,10 +218,12 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
             continue
         db.execute(
             "UPDATE messages SET content = ?, boundary_pattern_id = ?, "
-            "       boundary_patterns_version = ?, cleaner_version = NULL "
+            "       boundary_patterns_version = ?, cleaner_version = NULL, "
+            "       cleaned_content = NULL "
             "WHERE msg_key = ?",
             (content, pattern_id, version, msg_key),
         )
+        db.execute("DELETE FROM disclaimer_hits WHERE msg_key = ?", (msg_key,))
     if not dry_run:
         db.commit()
 

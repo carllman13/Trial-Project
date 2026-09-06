@@ -5,6 +5,9 @@ Standard library only, deliberately: pip is often blocked on a work machine.
 import re
 from html.parser import HTMLParser
 
+# Bump when text conversion or normalization changes; both processors include it.
+CODE_VERSION = 2
+
 # Zero-width and soft-hyphen characters. Invisible on screen, and they sit
 # inside words where they silently break literal matching.
 _INVISIBLE = re.compile(r"[​‌‍⁠﻿­]")
@@ -35,6 +38,8 @@ class _TextExtractor(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in _BLOCK_TAGS:
             self.parts.append("\n")
+        elif tag in {"td", "th"} and self._skip_depth == 0:
+            self.parts.append("\t")  # adjacent cells must not become one word
 
     def handle_data(self, data):
         if self._skip_depth == 0:
