@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Outlook Digest</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Local Outlook Digest <button data-action="refresh" data-mode="last">↻ Refresh from last update</button></div>
+    <nav aria-label="Main tabs">
+      <button data-tab="folders" class="active">Folders</button>
+      <button data-tab="database">Database</button>
+      <button data-tab="disclaimers">Disclaimer list</button>
+      <button disabled title="Not included in this frontend">Drop .msg</button>
+    </nav>
+    <div id="sync-status"></div>
+  </header>
+  <main id="app"></main>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <script src="sample-data.js"></script>
+  <!-- A work-server adapter can set window.OutlookDigestAdapter here. -->
+  <script src="app.js"></script>
+</body>
+</html>
