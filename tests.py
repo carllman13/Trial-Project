@@ -52,8 +52,8 @@ REAL_MARKERS = [
 ]
 for label, marker, want_addr in REAL_MARKERS:
     body = f"My new reply here.\n\n{marker}\n> older text"
-    content, pid = splitter.split(body, pats)
-    check(f"{label}: content", content, "My new reply here.")
+    unique_body_text, pid = splitter.split(body, pats)
+    check(f"{label}: unique_body_text", unique_body_text, "My new reply here.")
     check_true(f"{label}: a boundary was found", pid is not None)
 
 print("\nsplitter -- wrapping")
@@ -61,16 +61,16 @@ print("\nsplitter -- wrapping")
 wrapped = ("Many thanks Carl, that's very helpful.\n\n"
            "On September 4, 2026 at 10:08:08 PM GMT+5, Bader Al Hussain CFA,\n"
            "CAIA <BAlhussain@humain.com> wrote:\nolder text")
-content, pid = splitter.split(wrapped, pats)
-check("wrapped marker across 2 lines", content, "Many thanks Carl, that's very helpful.")
+unique_body_text, pid = splitter.split(wrapped, pats)
+check("wrapped marker across 2 lines", unique_body_text, "Many thanks Carl, that's very helpful.")
 
 # A fixed 3-line join would break this one: the window would run past `wrote:`
 # into the body text and the end-anchor would fail.
 unwrapped = ("Noted.\n"
              "On Fri, 7 Aug 2026 at 20:39, Khalil, Adam <Adam.Khalil@gs.com> wrote:\n"
              "> old stuff")
-content, _p = splitter.split(unwrapped, pats)
-check("unwrapped marker followed by text", content, "Noted.")
+unique_body_text, _p = splitter.split(unwrapped, pats)
+check("unwrapped marker followed by text", unique_body_text, "Noted.")
 
 print("\nsplitter -- Outlook's own header block")
 outlook = ("Approving now.\n\n"
@@ -78,16 +78,16 @@ outlook = ("Approving now.\n\n"
            "Sent: 03 September 2026 08:30\n"
            "To: Carl Wei\n"
            "Subject: RE: vendor onboarding\n\nolder")
-content, pid = splitter.split(outlook, pats)
-check("From:/Sent: block", content, "Approving now.")
+unique_body_text, pid = splitter.split(outlook, pats)
+check("From:/Sent: block", unique_body_text, "Approving now.")
 
 separator = ("Approving now.\n\n"
              "________________________________\n"
              "From: Jane Patel <jane.patel@acme.com>\n"
              "Sent: 03 September 2026 08:30\n\nolder")
-content, _p = splitter.split(separator, pats)
-# Everything above the boundary stays in content, Outlook's rule line included.
-check("cut at the header block, rule line left above it", content,
+unique_body_text, _p = splitter.split(separator, pats)
+# Everything above the boundary stays in unique_body_text, Outlook's rule line included.
+check("cut at the header block, rule line left above it", unique_body_text,
       "Approving now.\n\n________________________________")
 
 for label, body in [
@@ -96,7 +96,7 @@ for label, body in [
     ("Original Message", "Hi.\n\n----- Original Message -----\nFrom: someone\n\nold"),
     ("Forwarded message", "Hi.\n\n---------- Forwarded message ----------\nFrom: someone\n\nold"),
 ]:
-    content, pid = splitter.split(body, pats)
+    unique_body_text, pid = splitter.split(body, pats)
     check_true(f"{label} cuts", pid is not None)
 
 print("\nsplitter -- must NOT cut")
@@ -107,9 +107,9 @@ for label, body in [
     ("quoted lines alone", "> some quoted text\n> more quoted text"),
     ("single > in prose", "Use x > y as the filter.\nThat is all."),
 ]:
-    content, pid = splitter.split(body, pats)
+    unique_body_text, pid = splitter.split(body, pats)
     check(f"{label}: no boundary", pid, None)
-    check(f"{label}: body intact", content, textnorm.normalize(body))
+    check(f"{label}: body intact", unique_body_text, textnorm.normalize(body))
 
 print("\ncleaner -- one pattern, many wrappings")
 matcher = cleaner.build_matcher("Disclaimer: testing xxx.", "literal")
@@ -136,7 +136,7 @@ demo.load(conn, log=lambda *a: None)
 splitter.split_messages(conn, log=lambda *a: None)
 cleaner.clean_messages(conn, log=lambda *a: None)
 
-rows = dict(conn.execute("SELECT msg_key, cleaned_content FROM messages"))
+rows = dict(conn.execute("SELECT msg_key, cleaned_unique_body_text FROM messages"))
 check("outlook block: chain and disclaimer gone", rows["<a1@acme.com>"],
       "Hi Carl,\n\nNumbers look fine to me. Approving now.\n\nJane"
       "\n\n________________________________")
@@ -155,7 +155,7 @@ cleaner.add_pattern(conn, "New footer", "Please consider the environment")
 check("adding a disclaimer restales every message",
       cleaner.clean_messages(conn, log=lambda *a: None), 5)
 
-# Re-splitting rewrites content, so the cleaner's output must be invalidated.
+# Re-splitting rewrites unique_body_text, so the cleaner's output must be invalidated.
 splitter.split_messages(conn, rebuild=True, log=lambda *a: None)
 stale = conn.execute(
     "SELECT COUNT(*) FROM messages WHERE cleaner_version IS NULL").fetchone()[0]
@@ -418,12 +418,12 @@ msg, parts = fetch.message_from_item(item, folder_path="Inbox")
 dbmod.store_message(conn, msg, parts)
 conn.commit()
 check("derived columns start NULL so the splitter picks it up",
-      conn.execute("SELECT content, cleaned_content, boundary_patterns_version "
+      conn.execute("SELECT unique_body_text, cleaned_unique_body_text, boundary_patterns_version "
                    "FROM messages").fetchone(), (None, None, None))
 splitter.split_messages(conn, log=lambda *a: None)
 cleaner.clean_messages(conn, log=lambda *a: None)
 check("fetched row cleans", conn.execute(
-    "SELECT cleaned_content FROM messages").fetchone()[0], "Hi")
+    "SELECT cleaned_unique_body_text FROM messages").fetchone()[0], "Hi")
 check("cc is queryable by address", conn.execute(
     "SELECT COUNT(*) FROM participants WHERE role='cc' AND addr='legal@acme.com'"
 ).fetchone()[0], 1)

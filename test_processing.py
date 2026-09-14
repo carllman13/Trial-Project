@@ -31,20 +31,20 @@ class ProcessingTests(unittest.TestCase):
     def test_resplit_clears_cleaned_text_and_hits(self):
         self.split(rebuild=True)
         self.assertEqual(self.conn.execute(
-            "SELECT cleaned_content, cleaner_version FROM messages").fetchone(),
+            "SELECT cleaned_unique_body_text, cleaner_version FROM messages").fetchone(),
             (None, None))
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM disclaimer_hits").fetchone()[0], 0)
         self.clean()
         self.assertEqual(self.conn.execute(
-            "SELECT cleaned_content FROM messages").fetchone()[0], "Hello")
+            "SELECT cleaned_unique_body_text FROM messages").fetchone()[0], "Hello")
 
     def test_disabled_cleaners_restore_content(self):
         self.conn.execute("UPDATE disclaimer_patterns SET enabled=0")
         self.assertEqual(self.clean(), 1)
-        content, cleaned = self.conn.execute(
-            "SELECT content, cleaned_content FROM messages").fetchone()
-        self.assertEqual(cleaned, content)
+        unique_body_text, cleaned = self.conn.execute(
+            "SELECT unique_body_text, cleaned_unique_body_text FROM messages").fetchone()
+        self.assertEqual(cleaned, unique_body_text)
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM disclaimer_hits").fetchone()[0], 0)
         self.assertEqual(self.clean(), 0)
@@ -53,7 +53,7 @@ class ProcessingTests(unittest.TestCase):
         self.conn.execute("UPDATE boundary_patterns SET enabled=0")
         self.assertEqual(self.split(), 1)
         self.assertEqual(self.conn.execute(
-            "SELECT content, boundary_pattern_id FROM messages").fetchone(),
+            "SELECT unique_body_text, boundary_pattern_id FROM messages").fetchone(),
             (self.raw, None))
         self.assertEqual(self.split(), 0)
 
@@ -112,3 +112,4 @@ class ProcessingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

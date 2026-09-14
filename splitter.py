@@ -1,7 +1,7 @@
 """Find where the quoted chain begins, so the sender's new text stands alone.
 
 Only the FIRST boundary matters: a message ends where the next one begins.
-Everything above it is `content`; the chain below is dropped, since `body_raw`
+Everything above it is `unique_body_text`; the chain below is dropped, since `body_raw`
 still holds it untouched. Finding no boundary is a normal outcome, not an
 error -- the unsplit messages are the to-do list of marker formats still to
 add.
@@ -156,8 +156,8 @@ def fingerprint(patterns):
 def split(body_text, patterns):
     """Cut a body at its first boundary, keeping only what is above it.
 
-    Returns (content, pattern_id). pattern_id is None when no boundary was
-    found, in which case the whole body is content. The chain below the cut is
+    Returns (unique_body_text, pattern_id). pattern_id is None when no boundary was
+    found, in which case the whole body is unique_body_text. The chain below the cut is
     discarded -- body_raw still holds it, so nothing is lost.
     """
     if not body_text:
@@ -187,7 +187,7 @@ def split(body_text, patterns):
 def split_messages(db, rebuild=False, dry_run=False, log=print):
     """Split every message whose result is stale. `body_raw` is never touched.
 
-    Re-splitting changes `content`, so the cleaner's output is invalidated too.
+    Re-splitting changes `unique_body_text`, so the cleaner's output is invalidated too.
     """
     patterns, broken = load_patterns(db)
     for pattern_id, label, err in broken:
@@ -196,12 +196,15 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
         raise ValueError("Invalid boundary patterns; fix or disable them before splitting.")
     # An empty enabled set is valid: retain the full normalized body.
 
+    if not dry_run:
+        textnorm.normalize_messages(db, log=log)
     version = fingerprint(patterns)
     where = "" if rebuild else \
-        "AND (boundary_patterns_version IS NULL OR boundary_patterns_version != :v)"
+        ("AND (boundary_patterns_version IS NULL OR boundary_patterns_version != :v "
+         "OR textnorm_version IS NULL OR textnorm_version != :t)")
     rows = db.execute(
-        f"SELECT msg_key, body_raw, body_type FROM messages "
-        f"WHERE body_raw IS NOT NULL {where}", {"v": version}
+        f"SELECT msg_key, body_raw, body_type, body_text, textnorm_version FROM messages "
+        f"WHERE body_raw IS NOT NULL {where}", {"v": version, "t": textnorm.CODE_VERSION}
     ).fetchall()
 
     if not rows:
@@ -209,19 +212,19 @@ def split_messages(db, rebuild=False, dry_run=False, log=print):
         return 0
 
     unsplit = 0
-    for msg_key, body_raw, body_type in rows:
-        text = textnorm.to_text(body_raw, body_type)
-        content, pattern_id = split(text, patterns)
+    for msg_key, body_raw, body_type, cached, text_version in rows:
+        text = cached if cached is not None and text_version == textnorm.CODE_VERSION else textnorm.to_text(body_raw, body_type)
+        unique_body_text, pattern_id = split(text, patterns)
         if pattern_id is None:
             unsplit += 1
         if dry_run:
             continue
         db.execute(
-            "UPDATE messages SET content = ?, boundary_pattern_id = ?, "
+            "UPDATE messages SET unique_body_text = ?, boundary_pattern_id = ?, "
             "       boundary_patterns_version = ?, cleaner_version = NULL, "
-            "       cleaned_content = NULL "
+            "       cleaned_unique_body_text = NULL "
             "WHERE msg_key = ?",
-            (content, pattern_id, version, msg_key),
+            (unique_body_text, pattern_id, version, msg_key),
         )
         db.execute("DELETE FROM disclaimer_hits WHERE msg_key = ?", (msg_key,))
     if not dry_run:
@@ -254,12 +257,12 @@ def test_patterns(db, log=print):
             log(f"  FAIL {label}: regex does not compile: {exc}")
             failures += 1
             continue
-        content, pattern_id = split(example, [pattern])
+        unique_body_text, pattern_id = split(example, [pattern])
         if pattern_id is None:
             log(f"  FAIL {label}: does not match its own example")
             failures += 1
-        elif content:
-            log(f"  FAIL {label}: cuts at the wrong line, left {content!r}")
+        elif unique_body_text:
+            log(f"  FAIL {label}: cuts at the wrong line, left {unique_body_text!r}")
             failures += 1
         else:
             log(f"  ok   {label}")

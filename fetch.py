@@ -20,9 +20,9 @@ one -- a clean run at home proves nothing about the managed build.
     pip install pywin32
     python3 cli.py mail.db fetch --since-days 30
 
-Only RAW columns are written. content and cleaned_content are
-left NULL, which is exactly what marks a message as needing work -- the
-splitter and cleaner pick it up on their next run.
+Only raw and mailbox metadata columns are written. body_text,
+unique_body_text and cleaned_unique_body_text stay NULL, which marks a new
+message as needing the local textnorm, splitter and cleaner stages.
 
 The COM-facing parts are thin wrappers; the awkward logic (address resolution,
 time conversion, key extraction) lives in small helpers that take a mail item
@@ -259,9 +259,15 @@ def message_from_item(item, folder_path=None, cache=None):
         except Exception:
             return default
 
+    try:
+        attachment_names = "\n".join(a.FileName for a in item.Attachments) or None
+    except Exception:
+        attachment_names = None
+
     msg = {
         "msg_key": key,
         "conversation_id": attr("ConversationID"),
+        "attachment_names": attachment_names,
         "subject": attr("Subject"),
         "sender_name": name,
         "sender_addr": addr,
@@ -317,6 +323,13 @@ def _resolve_folder(namespace, path):
     """Find a folder by display path, e.g. 'Inbox/Clients'."""
     parts = [p for p in path.replace("\\", "/").split("/") if p]
     current = namespace.GetDefaultFolder(OL_FOLDER_INBOX)
+    # Accept full store paths from the folder tree, as well as Inbox-relative paths.
+    if parts and parts[0].lower() != current.Name.lower():
+        try:
+            current = namespace.Folders[parts[0]]
+            parts = parts[1:]
+        except Exception:
+            pass
     if parts and parts[0].lower() == current.Name.lower():
         parts = parts[1:]
     for part in parts:
@@ -325,7 +338,7 @@ def _resolve_folder(namespace, path):
 
 
 def fetch_messages(conn, folder=None, recurse=False, since_days=30,
-                   use_restrict=True, limit=None, log=print):
+                   use_restrict=True, limit=None, log=print, since=None, strict=False):
     """Insert new mail; existing IDs only need a folder comparison.
 
     since_days windows the scan; the window is widened by a day on each run
@@ -340,8 +353,7 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
     root = _resolve_folder(namespace, folder) if folder \
         else namespace.GetDefaultFolder(OL_FOLDER_INBOX)
 
-    since = None
-    if since_days:
+    if since is None and since_days:
         since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=since_days + 1)
 
     cache = {}                      # directory path -> SMTP address, per run
@@ -358,8 +370,13 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
                 items = items.Restrict(restrict_filter(since))
         except Exception as exc:
             log(f"  ! {path}: cannot read items: {exc}")
+            if strict:
+                raise
             continue
 
+        if current is root and folder:
+            path = folder
+        scan_started = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         count = 0
         for item in items:
             if limit is not None and processed >= limit:
@@ -398,6 +415,8 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
                     conn.commit()          # so a crash does not lose the lot
                     log(f"  ... {stored} stored")
             except Exception as exc:
+                if strict:
+                    raise
                 failed += 1
                 if failed <= 5:
                     log(f"  ! item in {path} failed: {exc}")
@@ -405,7 +424,7 @@ def fetch_messages(conn, folder=None, recurse=False, since_days=30,
             "INSERT OR REPLACE INTO sync_state (key, value, updated_at) "
             "VALUES (?, ?, datetime('now'))",
             (f"last_fetch:{path}",
-             _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+             scan_started),
         )
         log(f"  {path}: {count} message(s)")
         if limit is not None and processed >= limit:

@@ -1,6 +1,6 @@
-"""Strip disclaimers from `content`.
+"""Strip disclaimers from `unique_body_text`.
 
-Runs after the splitter, on `content` rather than the raw body -- a disclaimer
+Runs after the splitter, on `unique_body_text` rather than the raw body -- a disclaimer
 sits inside the sender's own new text, not in the quoted chain.
 
 Entirely local: no network, no Outlook. Safe to re-run as often as you like.
@@ -10,6 +10,7 @@ import re
 import zlib
 
 import textnorm
+import splitter
 
 CLEANER_CODE_VERSION = 2
 
@@ -63,15 +64,15 @@ def fingerprint(patterns):
     return zlib.crc32(seed.encode("utf-8")) & 0x7FFFFFFF
 
 
-def clean_text(content, patterns):
+def clean_text(unique_body_text, patterns):
     """Remove every enabled disclaimer from one message.
 
     Returns (cleaned, [(pattern_id, chars_removed), ...]).
     Patterns run in database order; overlapping matches can depend on that order.
     """
-    if not content:
+    if not unique_body_text:
         return "", []
-    text, hits = content, []
+    text, hits = unique_body_text, []
     for pattern_id, _label, matcher in patterns:
         stripped, count = matcher.subn("", text)
         if count:
@@ -81,20 +82,26 @@ def clean_text(content, patterns):
 
 
 def clean_messages(db, rebuild=False, dry_run=False, log=print):
-    """Clean every message whose cleaned_content is stale."""
+    """Clean every message whose cleaned_unique_body_text is stale."""
     patterns, broken = load_patterns(db)
     for pattern_id, label, err in broken:
         log(f"  ! pattern {pattern_id} ({label}) failed to compile: {err}")
     if broken:
         raise ValueError("Invalid disclaimer patterns; fix or disable them before cleaning.")
-    # An empty enabled set restores content and removes old hit records.
+    # An empty enabled set restores unique_body_text and removes old hit records.
 
+    split_patterns, split_broken = splitter.load_patterns(db)
+    if split_broken:
+        raise ValueError("Invalid boundary patterns; fix before cleaning.")
+    split_version = splitter.fingerprint(split_patterns)
     version = fingerprint(patterns)
     where = "" if rebuild else \
         "AND (cleaner_version IS NULL OR cleaner_version != :v)"
     rows = db.execute(
-        f"SELECT msg_key, content FROM messages "
-        f"WHERE content IS NOT NULL {where}", {"v": version}
+        f"SELECT msg_key, unique_body_text FROM messages "
+        f"WHERE unique_body_text IS NOT NULL AND textnorm_version = :t "
+        f"AND boundary_patterns_version = :s {where}",
+        {"v": version, "t": textnorm.CODE_VERSION, "s": split_version}
     ).fetchall()
 
     if not rows:
@@ -102,17 +109,17 @@ def clean_messages(db, rebuild=False, dry_run=False, log=print):
         return 0
 
     changed = emptied = 0
-    for msg_key, content in rows:
-        cleaned, hits = clean_text(content, patterns)
-        if cleaned != content:
+    for msg_key, unique_body_text in rows:
+        cleaned, hits = clean_text(unique_body_text, patterns)
+        if cleaned != unique_body_text:
             changed += 1
-        if content.strip() and not cleaned.strip():
+        if unique_body_text.strip() and not cleaned.strip():
             emptied += 1
             log(f"  ! {msg_key} cleaned to empty -- pattern too greedy?")
         if dry_run:
             continue
         db.execute(
-            "UPDATE messages SET cleaned_content = ?, cleaner_version = ? "
+            "UPDATE messages SET cleaned_unique_body_text = ?, cleaner_version = ? "
             "WHERE msg_key = ?",
             (cleaned, version, msg_key),
         )

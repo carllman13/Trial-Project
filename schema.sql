@@ -4,7 +4,7 @@
 --   RAW      written once at ingest, never modified
 --   DERIVED  produced by a pass over the database; delete and rebuild freely
 --
--- Pipeline order is: fetch -> split -> clean.
+-- Pipeline order is: fetch -> textnorm -> split -> clean.
 
 PRAGMA journal_mode = WAL;
 
@@ -19,14 +19,19 @@ CREATE TABLE IF NOT EXISTS messages (
     received_time       TEXT,
     folder              TEXT,
     has_attachments     INTEGER,
+    attachment_names    TEXT,              -- newline-separated; NULL if none
     recipients_dropped  INTEGER DEFAULT 0,  -- addresses Outlook would not resolve
 
     -- RAW
     body_raw            TEXT,              -- whole body, quoted chain included
     body_type           TEXT,              -- 'html' | 'text'
 
+    -- DERIVED by textnorm, from body_raw
+    body_text           TEXT,
+    textnorm_version    INTEGER,
+
     -- DERIVED by the splitter
-    content             TEXT,              -- what this sender newly wrote
+    unique_body_text             TEXT,              -- what this sender newly wrote
     boundary_pattern_id INTEGER REFERENCES boundary_patterns(pattern_id),
     -- Fingerprint of the enabled boundary patterns, so editing one restales
     -- every row automatically. It folds in the matching code's own version as
@@ -34,8 +39,8 @@ CREATE TABLE IF NOT EXISTS messages (
     -- is why the name is not a promise about patterns alone.
     boundary_patterns_version INTEGER,
 
-    -- DERIVED by the cleaner, from `content`
-    cleaned_content     TEXT,
+    -- DERIVED by the cleaner, from `unique_body_text`
+    cleaned_unique_body_text     TEXT,
     cleaner_version     INTEGER,           -- same idea, for disclaimer patterns
 
     first_ingested      TEXT
@@ -75,7 +80,7 @@ CREATE TABLE IF NOT EXISTS boundary_patterns (
     created_at      TEXT
 );
 
--- Boilerplate to strip from `content`.
+-- Boilerplate to strip from `unique_body_text`.
 CREATE TABLE IF NOT EXISTS disclaimer_patterns (
     pattern_id    INTEGER PRIMARY KEY,
     label         TEXT NOT NULL UNIQUE,
@@ -101,3 +106,6 @@ CREATE TABLE IF NOT EXISTS sync_state (
     value       TEXT,
     updated_at  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_messages_untext ON messages(textnorm_version);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, sent_time);

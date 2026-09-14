@@ -17,13 +17,18 @@ def connect(path):
 def init(path, log=print):
     """Create tables if missing and seed defaults. Safe to run repeatedly."""
     conn = connect(path)
+    had_disclaimer_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='disclaimer_patterns'"
+    ).fetchone() is not None
     # Before the schema, not after: schema.sql builds indexes over columns that
     # an older database may not have yet, and would fail on the way past.
     migrate(conn)
-    with open(SCHEMA) as fh:
+    with open(SCHEMA, encoding="utf-8") as fh:
         conn.executescript(fh.read())
     added_b = seed_boundary_patterns(conn)
-    added_d = seed_disclaimer_patterns(conn)
+    seeded = conn.execute("SELECT value FROM sync_state WHERE key = 'disclaimer_defaults_seeded'").fetchone()
+    added_d = 0 if (seeded or had_disclaimer_table) else seed_disclaimer_patterns(conn)
+    conn.execute("INSERT OR IGNORE INTO sync_state (key, value) VALUES ('disclaimer_defaults_seeded', '1')")
     conn.commit()
     log(f"schema ready at {path}"
         + (f"; seeded {added_b} boundary pattern(s)" if added_b else "")
@@ -46,6 +51,18 @@ def migrate(conn):
     if "splitter_version" in have and "boundary_patterns_version" not in have:
         conn.execute("ALTER TABLE messages RENAME COLUMN splitter_version "
                      "TO boundary_patterns_version")
+
+    # Preserve raw data and existing derived values when adopting clearer names.
+    for old, new in (("content", "unique_body_text"),
+                     ("cleaned_content", "cleaned_unique_body_text")):
+        if old in have and new not in have:
+            conn.execute(f"ALTER TABLE messages RENAME COLUMN {old} TO {new}")
+        # If both exist, the newer column is authoritative. Never resurrect
+        # old derived output after the current pipeline deliberately cleared it.
+    for name, kind in (("body_text", "TEXT"), ("textnorm_version", "INTEGER"),
+                       ("attachment_names", "TEXT")):
+        if name not in have:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {kind}")
 
 
 def seed_boundary_patterns(conn):
@@ -109,7 +126,7 @@ def store_message(conn, msg, participants=()):
     row = {"conversation_id": None, "subject": None, "sender_name": None,
            "sender_addr": None, "sent_time": None, "received_time": None,
            "folder": None, "has_attachments": 0, "body_type": "html",
-           "recipients_dropped": 0, **msg}
+           "recipients_dropped": 0, "attachment_names": None, **msg}
     # Lowercase here as well as in participants, or the same person shows up
     # twice in SELECT DISTINCT sender_addr.
     if row["sender_addr"]:
@@ -126,10 +143,10 @@ def store_message(conn, msg, participants=()):
             "INSERT INTO messages "
             "(msg_key, conversation_id, subject, sender_name, sender_addr, "
             " sent_time, received_time, folder, has_attachments, "
-            " recipients_dropped, body_raw, body_type, first_ingested) "
+            " recipients_dropped, attachment_names, body_raw, body_type, first_ingested) "
             "VALUES (:msg_key, :conversation_id, :subject, :sender_name, "
             "        :sender_addr, :sent_time, :received_time, :folder, "
-            "        :has_attachments, :recipients_dropped, :body_raw, "
+            "        :has_attachments, :recipients_dropped, :attachment_names, :body_raw, "
             "        :body_type, datetime('now'))",
             row,
         )

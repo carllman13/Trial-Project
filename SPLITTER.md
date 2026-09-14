@@ -9,10 +9,10 @@ history.
 Only the **first** boundary matters. We are not breaking a thread into N
 messages -- just cutting it in two.
 
-    content         = body above the first boundary
+    unique_body_text = body above the first boundary
     quoted_history  = body from the boundary down
 
-If no boundary is found, the whole body is `content` and the message is
+If no boundary is found, the whole body is `unique_body_text` and the message is
 recorded as unsplit. That is a normal outcome, not an error -- the list of
 unsplit messages is the to-do list of formats still to add.
 
@@ -135,7 +135,7 @@ split(body, patterns):
                     window = lines[i+span : i+span+p.confirm_within]
                     if not any(p.confirm_regex.search(l) for l in window):
                         continue
-                return ("\n".join(lines[:i]),    # content
+                return ("\n".join(lines[:i]),    # unique_body_text
                         "\n".join(lines[i:]),    # quoted_history
                         p.pattern_id)
 
@@ -157,14 +157,14 @@ the same line.
 Add to `messages`:
 
 ```sql
-content              TEXT     -- above the boundary          [derived]
+unique_body_text      TEXT     -- above the boundary          [derived]
 quoted_history       TEXT     -- from the boundary down      [derived]
 boundary_pattern_id  INTEGER  -- which pattern cut it; NULL = unsplit
 boundary_patterns_version     INTEGER  -- fingerprint, see below
 ```
 
 `body_raw` is never modified. Everything above is derived and rebuilt on
-demand, exactly like `cleaned_content`.
+demand, exactly like `cleaned_unique_body_text`.
 
 `boundary_patterns_version` is a fingerprint of the splitter code version plus the exact
 set of enabled patterns (same approach as `cleaner_fingerprint`). Add, edit or
@@ -172,7 +172,7 @@ disable a pattern and every message goes stale automatically and re-splits on
 the next run. Nothing to remember to bump.
 
 **Order matters:** split first, then clean. A disclaimer sits inside the new
-text; run the cleaner on `content` after the split, not on `body_raw`.
+text; run the cleaner on `unique_body_text` after the split, not on `body_raw`.
 
 ## Adding a pattern
 
@@ -218,6 +218,6 @@ messages with no boundary found.
 2. **No marker at all.** Some clients quote with nothing but indentation.
    Those stay unsplit, which is the correct outcome.
 3. **Attribution is best-effort.** Address usually available, date often not.
-4. **The boundary line itself** goes to `quoted_history`, not `content`.
-   Anything above it stays in `content`, including the `________` rule line
+4. **The boundary line itself** is omitted, not added to `unique_body_text`.
+   Anything above it stays in `unique_body_text`, including the `________` rule line
    Outlook draws directly above its header block.

@@ -6,7 +6,7 @@ import re
 from html.parser import HTMLParser
 
 # Bump when text conversion or normalization changes; both processors include it.
-CODE_VERSION = 2
+CODE_VERSION = 3
 
 # Zero-width and soft-hyphen characters. Invisible on screen, and they sit
 # inside words where they silently break literal matching.
@@ -83,3 +83,26 @@ def to_text(body, body_type):
     if (body_type or "html").lower() == "html":
         return html_to_text(body)
     return normalize(body)
+
+
+def normalize_messages(db, rebuild=False, dry_run=False, log=print):
+    """Cache plain text and invalidate downstream outputs when rebuilt."""
+    where = "" if rebuild else "AND (textnorm_version IS NULL OR textnorm_version != ?)"
+    rows = db.execute(
+        "SELECT msg_key, body_raw, body_type FROM messages WHERE body_raw IS NOT NULL " + where,
+        () if rebuild else (CODE_VERSION,),
+    ).fetchall()
+    for key, raw, kind in rows:
+        text = to_text(raw, kind)
+        if not dry_run:
+            db.execute(
+                "UPDATE messages SET body_text=?, textnorm_version=?, "
+                "unique_body_text=NULL, boundary_pattern_id=NULL, boundary_patterns_version=NULL, "
+                "cleaned_unique_body_text=NULL, cleaner_version=NULL WHERE msg_key=?",
+                (text, CODE_VERSION, key),
+            )
+            db.execute("DELETE FROM disclaimer_hits WHERE msg_key=?", (key,))
+    if not dry_run:
+        db.commit()
+    log(f"{'would normalize' if dry_run else 'normalized'} {len(rows)} message(s)")
+    return len(rows)

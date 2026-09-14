@@ -17,7 +17,7 @@ screenshots; this is not a copy of the confidential underlying email dataset.
 No application or automated tests were run on the development computer, as
 requested. Exact pixel matching still needs a browser check on the work computer.
 
-## Five files, three responsibilities
+## Six files, three responsibilities
 
 | File | Responsibility |
 | --- | --- |
@@ -25,10 +25,12 @@ requested. Exact pixel matching still needs a browser check on the work computer
 | `styles.css` | Screenshot-style layout and appearance |
 | `app.js` | Rendering and browser interactions |
 | `sample-data.js` | Synthetic preview data, separate from UI logic |
+| `adapter.js` | Same-origin FastAPI connector |
 | `README.md` | Setup and backend handoff |
 
 Implemented browser interactions: tab switching, folder selection and scan
-checkboxes, table sorting, Ctrl/Cmd-click multi-selection, chain search, message
+checkboxes, persistent folder drag-ordering, table sorting, Ctrl/Cmd-click
+multi-selection, chain search, message
 filters, dragging rows into queues, removing/clearing queued items, copying
 messages/chains/prompts, showing raw message text, editing/toggling disclaimers.
 Filter criteria survive detail selection and switching tabs. Last N days in the
@@ -40,12 +42,19 @@ storage. Clipboard availability depends on browser policy; a fallback supports
 local-file previews where permitted. Raw HTML is displayed as **text**, never
 executed or inserted as message markup.
 
-## Connect the work backend later
+Folder drag-order is the only browser-stored preference. It changes the dashboard
+list only; it never moves or renames an Outlook folder. Alt+Up/Down provides the
+keyboard equivalent while a folder name is focused.
 
-Define `window.OutlookDigestAdapter` in a script loaded before `app.js` (the HTML
-marks the insertion point). The adapter can call the existing local server's
-endpoints. Do not put Outlook access, SQL or disclaimer matching in `app.js`.
-No particular endpoint paths or Python web framework are assumed.
+## Connect the FastAPI backend
+
+`adapter.js` connects the UI to the included `/api/dashboard/...` FastAPI routes
+when the page is served by the local server. Opening `index.html` directly keeps
+the synthetic preview mode. The browser never talks to Outlook or SQLite.
+
+See [`WORK_SERVER_MERGE.md`](../WORK_SERVER_MERGE.md) for the two additions to
+the existing work server. Do not put Outlook access, SQL or disclaimer matching
+in `app.js`.
 
 Methods may return values directly or promises:
 
@@ -53,6 +62,8 @@ Methods may return values directly or promises:
 | --- | --- | --- |
 | `getInitialData()` | None | Complete data object described below; required |
 | `queryMessages(filters)` | Filter form values | Message array |
+| `getMessage(key)` / `getChain(key)` | Stable message or chain key | One body, loaded only when needed |
+| `getChains(folder)` | Stored folder path | Chain metadata for that folder |
 | `refresh(options)` | `mode`: `last`, `cutoff` or `start`; selected `folders`; `cutoff: {days,hours,minutes}` | Complete updated data object |
 | `refreshFolders()` | None | Folder name array |
 | `saveDisclaimers(settings)` | `{disclaimers, autoClean}` | Resolve on success; throw on failure |

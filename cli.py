@@ -3,9 +3,10 @@
     python3 cli.py mail.db init            create tables, seed default patterns
     python3 cli.py mail.db fetch           read mail from classic Outlook
     python3 cli.py mail.db demo            load a fake mailbox to try things on
+    python3 cli.py mail.db textnorm        cache readable plain text
     python3 cli.py mail.db split           find quoted chains
     python3 cli.py mail.db clean           strip disclaimers
-    python3 cli.py mail.db run             split then clean
+    python3 cli.py mail.db run             textnorm, split then clean
     python3 cli.py mail.db report          what fired, what did not
     python3 cli.py mail.db test-patterns   check patterns match their examples
     python3 cli.py mail.db unsplit         sample messages with no boundary
@@ -19,6 +20,7 @@ import textwrap
 import cleaner
 import db as dbmod
 import splitter
+import textnorm
 
 
 def cmd_report(conn, log=print):
@@ -70,7 +72,7 @@ def cmd_report(conn, log=print):
 def cmd_unsplit(conn, limit=5, log=print):
     """Show messages no pattern matched. Each distinct marker is one new row."""
     rows = conn.execute(
-        "SELECT msg_key, subject, content FROM messages "
+        "SELECT msg_key, subject, unique_body_text FROM messages "
         "WHERE boundary_patterns_version IS NOT NULL AND boundary_pattern_id IS NULL "
         "LIMIT ?", (limit,)
     ).fetchall()
@@ -78,9 +80,9 @@ def cmd_unsplit(conn, limit=5, log=print):
         log("every split message found a boundary")
         return
     log(f"{len(rows)} message(s) with no boundary found:\n")
-    for msg_key, subject, content in rows:
+    for msg_key, subject, unique_body_text in rows:
         log(f"--- {msg_key}  {subject or ''}")
-        for line in (content or "").split("\n")[:12]:
+        for line in (unique_body_text or "").split("\n")[:12]:
             log("    " + textwrap.shorten(line, 100) if line.strip() else "")
         log("")
 
@@ -107,7 +109,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
-        "init", "fetch", "demo", "split", "clean", "run", "report",
+        "init", "fetch", "demo", "textnorm", "split", "clean", "run", "report",
         "test-patterns", "unsplit", "list-unresolved"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
@@ -141,11 +143,14 @@ def main():
         elif args.command == "demo":
             import demo
             demo.load(conn)
+        elif args.command == "textnorm":
+            textnorm.normalize_messages(conn, args.rebuild, args.dry_run)
         elif args.command == "split":
             splitter.split_messages(conn, args.rebuild, args.dry_run)
         elif args.command == "clean":
             cleaner.clean_messages(conn, args.rebuild, args.dry_run)
         elif args.command == "run":
+            # split_messages makes the cached body_text current before splitting.
             splitter.split_messages(conn, args.rebuild, args.dry_run)
             cleaner.clean_messages(conn, args.rebuild, args.dry_run)
         elif args.command == "report":

@@ -7,7 +7,7 @@ which matters on a locked-down work machine.
 ```
 python3 cli.py mail.db init                    # create tables, seed patterns
 python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
-python3 cli.py mail.db run                     # split, then clean
+python3 cli.py mail.db run                     # textnorm, split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
 python3 tests.py                               # 94 assertions
 ```
@@ -65,7 +65,7 @@ refresh. To run the repeat-import tests without Outlook:
 |---|---|
 | `schema.sql` | The six tables |
 | `db.py` | Open, create schema, seed patterns, store a message |
-| `textnorm.py` | HTML -> text, whitespace normalisation |
+| `textnorm.py` | HTML -> text, whitespace normalisation and cached text stage |
 | `splitter.py` | Find where the quoted chain begins |
 | `cleaner.py` | Remove disclaimers |
 | `cli.py` | One entry point for every command |
@@ -77,24 +77,27 @@ refresh. To run the repeat-import tests without Outlook:
 ## Pipeline
 
 ```
-fetch  ->  split  ->  clean
+fetch  ->  textnorm  ->  split  ->  clean
 ```
 
 **fetch** needs a running Outlook and happens once per message. It writes
 `body_raw` and nothing else derived.
 
-**split** cuts `body_raw` at the first quoted-chain marker and keeps what is
-above it as `content` -- what this sender newly wrote. The chain below is
+**textnorm** converts and caches `body_raw` as `body_text`.
+
+**split** cuts `body_text` at the first quoted-chain marker and keeps what is
+above it as `unique_body_text` -- what this sender newly wrote. The chain below is
 dropped, since `body_raw` still holds it untouched.
 
-**clean** removes disclaimers from `content`, producing `cleaned_content`.
+**clean** removes disclaimers from `unique_body_text`, producing
+`cleaned_unique_body_text`.
 
 Raw columns are written once and never modified. Everything else is derived and
 can be deleted and rebuilt at any time -- which you will do often, as you find
 new marker formats and new boilerplate.
 
 Order matters: a disclaimer sits inside the sender's own text, so cleaning runs
-on `content` after the split, not on the raw body. Re-splitting therefore
+on `unique_body_text` after the split, not on the raw body. Re-splitting therefore
 invalidates cleaning automatically.
 
 ## Staleness handles itself
@@ -102,9 +105,8 @@ invalidates cleaning automatically.
 `boundary_patterns_version` and `cleaner_version` each store a fingerprint of
 the enabled pattern set, plus the code that applies it. Add, edit or disable a pattern and every
 affected message stops matching its stored fingerprint, so the next run redoes
-it. Pattern edits are detected automatically. Developers must bump the relevant
-code version when changing processing logic. Both fingerprints also include
-textnorm.CODE_VERSION, so conversion changes cause stored bodies to be reprocessed.
+it. There is no version number to remember to bump and no refresh flag to
+remember to pass.
 
 ## Tables
 
@@ -223,7 +225,8 @@ on the item you received. Anyone appearing solely inside the quoted chain
 below is not in that table. That is deliberate: those are paragraphs inside a
 body, not deliveries to your mailbox.
 
-Only RAW columns are written. `content` and `cleaned_content` are left NULL,
+Only raw and mailbox metadata columns are written. `body_text`,
+`unique_body_text` and `cleaned_unique_body_text` are left NULL,
 which is what marks a message as needing work.
 
 ### Untested against a real mailbox
@@ -232,66 +235,3 @@ Everything above is exercised against stubs that mimic Outlook's behaviour,
 including its failures. None of it has run against real Outlook -- that needs
 Windows. Expect to shake something out on the first run; start with
 `--limit 20` and read what lands.
-
-## Corporate agent handoff
-
-Development changes are delivered through GitHub. Application execution,
-test execution, and Outlook checks happen on the corporate laptop. The
-processing changes below were reviewed as source only, not executed during
-their preparation.
-
-### Stable design
-
-One imported Outlook item is one message row. Split only at the first quoted
-boundary. Never create rows for quoted historical emails. Keep the original
-body unchanged; content and cleaned_content can be rebuilt from it.
-Classic Outlook is the first input source; pasted/text imports come later.
-
-Keep a single SQLite database and small Python modules:
-- fetch.py handles Outlook access and calls db.py.
-- db.py owns schema setup and message/participant storage.
-- textnorm.py converts bodies to readable text.
-- splitter.split() and cleaner.clean_text() are plain functions, usable by
-  another application without Outlook or a database.
-- split_messages() and clean_messages() apply those functions to stored rows.
-- cli.py coordinates commands. Run split before clean after boundary or
-  text-conversion changes; clean alone is enough after disclaimer edits.
-
-### Processing rules
-
-- Fingerprints include matching settings, regex flags and explicit code
-  versions. This update causes one recalculation on the next run.
-- Re-splitting clears cleaned_content, cleaner_version and disclaimer_hits.
-- Zero enabled boundary rules retains the full normalized body.
-- Zero enabled disclaimer rules restores content and clears removal records.
-- An enabled malformed regex stops that processing step before result writes.
-  Fix or disable the named rule. This does not undo an earlier completed step.
-- HTML table cells have text separators; complex table layout is not retained.
-- No schema migration or additional dependency is needed for this update.
-
-### Validation on the corporate laptop
-
-From the downloaded repository directory, first run the existing checks:
-`python -X utf8 tests.py`
-
-Then run the focused checks with compact output:
-`python -X utf8 -m unittest -q test_refresh test_processing`
-
-These use synthetic data and do not connect to Outlook. Expected outcome is
-exit code 0 and OK (19 focused tests). This is an expectation, not a recorded
-test result. The agent should report the commit, Python version, both commands'
-exit codes, and failed test names if any. One short summary is enough; full
-tracebacks are useful only when something fails.
-
-### Proposed next backend work (not implemented here)
-
-1. queries.py: a small shared interface to list/filter messages, retrieve a
-   message with participants, and export selected newest content in a defined
-   order. Keep SQL here so a future dashboard and another agent can reuse it.
-2. Compact diagnostics: totals, pending processing, missing addresses, pattern
-   failures, and scan scope/time. No-boundary messages are not automatically
-   errors; many emails have no quoted history.
-3. Explicit scan modes and schema upgrade checks before connecting Outlook.
-   sync_state is currently a scan timestamp, not a reliable resume cursor.
-
-Avoid new services, multiple databases or a frontend framework until needed.

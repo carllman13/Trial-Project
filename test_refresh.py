@@ -74,7 +74,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_new_message_is_unprocessed_and_caller_can_rollback(self):
         self.assertEqual(db.store_message(self.conn, message()), 'inserted')
-        self.assertEqual(self.conn.execute('SELECT content, cleaned_content FROM messages').fetchone(), (None, None))
+        self.assertEqual(self.conn.execute('SELECT unique_body_text, cleaned_unique_body_text FROM messages').fetchone(), (None, None))
         self.conn.rollback()
         self.assertEqual(self.conn.execute('SELECT count(*) FROM messages').fetchone()[0], 0)
 
