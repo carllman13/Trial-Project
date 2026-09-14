@@ -1,0 +1,69 @@
+LOCAL AGENT INSTRUCTIONS
+
+Update the existing work application from GitHub main using commit:
+
+92f011d5ec8a9f4889f226d1b2282b6814c57a45
+
+Important rules
+
+1. Inspect and report git status first. Do not discard or overwrite any
+   work-only changes.
+2. Keep the existing work versions of app.py, com_thread.py, and jobs.py.
+3. Read WORK_SERVER_MERGE.md and follow it.
+4. Merge the updated schema and processing code while preserving these column
+   names:
+
+       body_raw
+       body_text
+       unique_body_text
+       cleaned_unique_body_text
+
+5. Add dashboard_api.py and the new read_api functionality.
+6. Preserve the existing read_api functions and routes as well as the new
+   dashboard functions.
+7. Add this to the existing work app.py imports:
+
+       import dashboard_api
+
+   Immediately before app.mount(...), add:
+
+       dashboard_api.install(app, DB_PATH, TREE_CACHE, PERSONAL_STORE)
+
+8. Serve the new frontend files. Either point STATIC_DIR to frontend/ or copy
+   the frontend files into static/. Do not create or run a second web server.
+9. README.md, SPLITTER.md, frontend/README.md, and WORK_SERVER_MERGE.md are
+   documentation only. Do not execute them.
+10. Stop the server and create a safe backup of the SQLite database before
+    opening the upgraded application. Do not test against the only copy.
+11. First run only these offline tests:
+
+       python -X utf8 -m unittest -q test_dashboard test_processing test_refresh
+
+12. Report the Python version, FastAPI and Pydantic versions, files merged,
+    test exit code, and concise details of failures.
+13. If the tests pass, start one local server:
+
+       uvicorn app:app --host 127.0.0.1 --port 8000
+
+14. First open the synthetic preview:
+
+       http://127.0.0.1:8000/?preview=1
+
+15. Then remove ?preview=1 to test read-only database loading.
+16. Do not press Outlook Refresh, Save Disclaimers, or Start Backfilling yet.
+17. Confirm that:
+
+    - The Database tab loads stored messages.
+    - Selecting a message loads its body.
+    - The Folders tab groups messages using conversation_id.
+    - Folder dragging changes only dashboard order.
+    - Existing server routes still work.
+
+18. Send one concise report. Include a full traceback only when something
+    fails. Do not include real email bodies or database files.
+
+Safe sequence
+
+backup -> merge -> offline tests -> sample frontend -> read-only database ->
+write operations later
+
