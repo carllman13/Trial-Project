@@ -1,0 +1,10 @@
+{
+  "name": "Outlook -> SQLite email digest",
+  "install": "python3 -m pip install --user --upgrade pip >/dev/null && python3 -m pip install --user -r requirements-dev.txt && (test -f mail.db || (python3 cli.py mail.db init && python3 cli.py mail.db demo && python3 cli.py mail.db run))",
+  "terminals": [
+    {
+      "name": "dashboard",
+      "command": "MAIL_DB=$PWD/mail.db python3 -m uvicorn dev_server:app --host 127.0.0.1 --port 8000"
+    }
+  ]
+}
