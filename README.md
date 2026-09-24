@@ -6,7 +6,8 @@ which matters on a locked-down work machine.
 
 ```
 python3 cli.py mail.db init                    # create tables, seed patterns
-python3 cli.py mail.db fetch --since-days 30   # read from classic Outlook
+python3 cli.py mail.db fetch --since-days 30   # classic Outlook (Windows COM)
+python3 cli.py mail.db fetch-graph --since-days 30  # Outlook.com via Graph
 python3 cli.py mail.db run                     # textnorm, split, then clean
 python3 cli.py mail.db report                  # what fired, what never fires
 python3 tests.py                               # 94 assertions
@@ -22,7 +23,13 @@ Programmatic address access can also raise a security prompt or be blocked by
 group policy, so test on the managed work laptop rather than a personal
 machine.
 
-Everything after `fetch` is plain Python and SQLite, and runs anywhere.
+`fetch-graph` talks to Microsoft Graph over HTTPS (stdlib `urllib` only). It
+targets personal Outlook.com / Microsoft 365 mailboxes from Linux or anywhere
+COM is unavailable. It writes the same raw columns through `db.store_message`,
+so `run` / textnorm / split / clean are unchanged. See **Outlook.com / Graph
+fetch** below for auth.
+
+Everything after either fetch path is plain Python and SQLite, and runs anywhere.
 
 ## Repeat imports and folder moves
 
@@ -70,9 +77,61 @@ refresh. To run the repeat-import tests without Outlook:
 | `cleaner.py` | Remove disclaimers |
 | `cli.py` | One entry point for every command |
 | `fetch.py` | Pull mail from classic Outlook via its automation interface |
+| `graph_auth.py` | Microsoft Graph OAuth / token env scaffolding |
+| `graph_fetch.py` | Pull mail from Outlook.com via Microsoft Graph |
 | `demo.py` | Fake mailbox with real-world marker formats |
 | `tests.py` | Assertions |
+| `test_graph_fetch.py` | Graph mapping + store-path tests (no network) |
 | `SPLITTER.md` | Why the splitter works the way it does |
+
+## Outlook.com / Graph fetch
+
+For `carlwei2017@outlook.com` (or any Outlook.com / Microsoft 365 mailbox) on
+Linux:
+
+```
+python3 cli.py mail.db init
+python3 cli.py mail.db fetch-graph --check-auth
+python3 cli.py mail.db fetch-graph --since-days 30 --limit 20
+python3 cli.py mail.db run
+```
+
+### What you must provide (no secrets in the repo)
+
+Pick **one** auth path:
+
+1. **Access token** (simplest for a one-shot test):
+
+   ```bash
+   export MS_GRAPH_ACCESS_TOKEN='eyJ...'          # or MS_GRAPH_TOKEN_FILE=/path/to/token
+   export MS_GRAPH_ACCOUNT=carlwei2017@outlook.com
+   ```
+
+2. **Device-code login** (interactive; Azure app registration required):
+
+   ```bash
+   export MS_GRAPH_CLIENT_ID='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+   export MS_GRAPH_TENANT=consumers              # personal MSA; or common
+   export MS_GRAPH_ACCOUNT=carlwei2017@outlook.com
+   export MS_GRAPH_TOKEN_CACHE=./.graph_token_cache.json   # optional persistence
+   python3 cli.py mail.db fetch-graph --check-auth
+   ```
+
+   Azure portal setup: register a **public client** app, enable **Allow public
+   client flows**, add Microsoft Graph delegated permission **Mail.Read**
+   (and usually User.Read). No client secret is needed for device code.
+
+3. **Refresh token** (non-interactive after an earlier device-code login):
+
+   ```bash
+   export MS_GRAPH_CLIENT_ID='...'
+   export MS_GRAPH_REFRESH_TOKEN='...'           # or rely on MS_GRAPH_TOKEN_CACHE
+   ```
+
+Client-credentials (app-only) is **not** supported for personal Outlook.com
+mailboxes; use a delegated token as above.
+
+`.graph_token_cache.json` and `.env` are gitignored -- never commit tokens.
 
 ## Pipeline
 

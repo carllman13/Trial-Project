@@ -3,3 +3,7 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+.graph_token_cache.json
+*.graph_token_cache.json
+.env
+.env.*

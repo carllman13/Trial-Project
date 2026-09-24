@@ -1,7 +1,8 @@
 """One entry point for the whole pipeline.
 
     python3 cli.py mail.db init            create tables, seed default patterns
-    python3 cli.py mail.db fetch           read mail from classic Outlook
+    python3 cli.py mail.db fetch           read mail from classic Outlook (Windows)
+    python3 cli.py mail.db fetch-graph     read mail via Microsoft Graph (Outlook.com)
     python3 cli.py mail.db demo            load a fake mailbox to try things on
     python3 cli.py mail.db textnorm        cache readable plain text
     python3 cli.py mail.db split           find quoted chains
@@ -109,27 +110,37 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
-        "init", "fetch", "demo", "textnorm", "split", "clean", "run", "report",
-        "test-patterns", "unsplit", "list-unresolved"])
+        "init", "fetch", "fetch-graph", "demo", "textnorm", "split", "clean",
+        "run", "report", "test-patterns", "unsplit", "list-unresolved"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
     ap.add_argument("--limit", type=int, default=None,
-                    help="fetch: max messages checked, including existing ones; "
-                         "unsplit/list-unresolved: samples to show")
-    ap.add_argument("--folder", help="fetch: folder path, e.g. 'Inbox/Clients'")
+                    help="fetch/fetch-graph: max messages checked, including "
+                         "existing ones; unsplit/list-unresolved: samples to show")
+    ap.add_argument("--folder", help="fetch/fetch-graph: folder path, "
+                                     "e.g. 'Inbox' or 'Inbox/Clients'")
     ap.add_argument("--recurse", action="store_true",
-                    help="fetch: include subfolders")
+                    help="fetch/fetch-graph: include subfolders")
     ap.add_argument("--since-days", type=int, default=30,
-                    help="fetch: how far back to look (0 for everything)")
+                    help="fetch/fetch-graph: how far back to look "
+                         "(0 for everything)")
     ap.add_argument("--no-restrict", action="store_true",
                     help="fetch: filter in Python instead of asking Outlook "
                          "(slower, but immune to date-format trouble)")
+    ap.add_argument("--check-auth", action="store_true",
+                    help="fetch-graph: verify Graph credentials and exit "
+                         "(no messages stored)")
     args = ap.parse_args()
     if args.limit is not None and args.limit < 1:
         ap.error("--limit must be positive")
 
     if args.command == "init":
         dbmod.init(args.db)
+        return
+
+    if args.command == "fetch-graph" and args.check_auth:
+        import graph_fetch
+        graph_fetch.check_auth()
         return
 
     conn = dbmod.connect(args.db)
@@ -140,6 +151,11 @@ def main():
                 conn, folder=args.folder, recurse=args.recurse,
                 since_days=args.since_days, use_restrict=not args.no_restrict,
                 limit=args.limit)
+        elif args.command == "fetch-graph":
+            import graph_fetch
+            graph_fetch.fetch_messages(
+                conn, folder=args.folder, recurse=args.recurse,
+                since_days=args.since_days, limit=args.limit)
         elif args.command == "demo":
             import demo
             demo.load(conn)
