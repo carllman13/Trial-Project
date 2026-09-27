@@ -58,6 +58,32 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_api.dashboard_messages(self.conn, {'limit': -1})
 
+    def test_multi_folder_filter(self):
+        self.seed('a', conversation='x', folder='Inbox')
+        self.seed('b', conversation='y', folder='Inbox/UKVI')
+        self.seed('c', conversation='z', folder='Archive')
+        keys = lambda f: {m['id'] for m in read_api.dashboard_messages(self.conn, f)}
+        self.assertEqual(keys({'folders': ['Inbox', 'Inbox/UKVI']}), {'a', 'b'})
+        self.assertEqual(keys({'folders': []}), {'a', 'b', 'c'})
+
+    def test_multiple_people_match_any(self):
+        for key, sender, to, cc in [('a', 'ann@x.com', 'bob@x.com', 'cat@x.com'),
+                                    ('b', 'bob@x.com', 'ann@x.com', 'dan@x.com'),
+                                    ('c', 'eve@x.com', 'eve@x.com', 'eve@x.com')]:
+            db.store_message(self.conn, dict(msg_key=key, conversation_id=key, body_raw='Hi', body_type='text',
+                subject='Topic', sender_name=None, sender_addr=sender, sent_time='2026-09-11T10:00:00Z',
+                received_time='2026-09-11T10:00:00Z', folder='Inbox'), [('to', to, None), ('cc', cc, None)])
+        keys = lambda f: {m['id'] for m in read_api.dashboard_messages(self.conn, f)}
+        self.assertEqual(keys({'from': ['ann@x.com', 'bob@x.com']}), {'a', 'b'})
+        self.assertEqual(keys({'to': ['bob@x.com', 'eve']}), {'a', 'c'})
+        self.assertEqual(keys({'to': ['cat@x.com'], 'includeCC': True}), {'a'})
+        self.assertEqual(keys({'from': ['ann@x.com', 'bob@x.com'], 'cc': ['dan@x.com']}), {'b'})
+        self.assertEqual(keys({'from': 'eve'}), {'c'})
+        self.assertEqual(keys({'from': [], 'to': ['  ']}), {'a', 'b', 'c'})
+        people = read_api.people(self.conn)
+        self.assertEqual([p['value'] for p in people['from']], ['ann@x.com', 'bob@x.com', 'eve@x.com'])
+        self.assertEqual([p['value'] for p in people['cc']], ['cat@x.com', 'dan@x.com', 'eve@x.com'])
+
     def test_existing_work_server_read_functions_remain_available(self):
         self.seed('a')
         self.assertEqual(read_api.state(self.conn)['messages'], 1)
@@ -108,6 +134,64 @@ class WebTests(unittest.TestCase):
                 headers = {'X-Outlook-Digest': '1'}
                 self.assertEqual(client.post('/api/dashboard/messages/query', json={}, headers=headers).json(), [])
                 self.assertEqual(client.post('/api/dashboard/messages/query', json={}, headers={**headers, 'Origin': 'https://untrusted.example'}).status_code, 403)
+
+    def test_preferences_persist_in_database(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import dashboard_api
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'mail.db')
+            conn = db.init(path, log=lambda *a: None); conn.close()
+            app = FastAPI()
+            dashboard_api.install(app, path)
+            headers = {'X-Outlook-Digest': '1'}
+            with TestClient(app) as client:
+                self.assertEqual(client.get('/api/dashboard/preferences').json(),
+                                 {'folderOrder': None, 'refreshChecked': None})
+                self.assertEqual(client.post('/api/dashboard/preferences', json={'refreshChecked': ['Inbox']}).status_code, 403)
+                client.post('/api/dashboard/preferences', headers=headers,
+                            json={'folderOrder': ['Inbox', 'Inbox/UKVI'], 'refreshChecked': ['Inbox/UKVI']})
+                client.post('/api/dashboard/preferences', headers=headers, json={'refreshChecked': []})
+            conn = db.connect(path)
+            try:
+                self.assertEqual(read_api.preferences(conn),
+                                 {'folderOrder': ['Inbox', 'Inbox/UKVI'], 'refreshChecked': []})
+            finally:
+                conn.close()
+
+    def test_refresh_uses_supplied_source_for_ticked_folders_only(self):
+        import time
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import dashboard_api
+
+        class FakeSource:
+            def __init__(self):
+                self.calls = []
+            def folder_tree(self, progress):
+                return [dict(path='Inbox', name='Inbox', children=[])]
+            def fetch_folder(self, conn, path, since, progress):
+                self.calls.append((path, since))
+                return 0
+
+        source = FakeSource()
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'mail.db')
+            conn = db.init(path, log=lambda *a: None); conn.close()
+            app = FastAPI()
+            dashboard_api.install(app, path, source=source)
+            headers = {'X-Outlook-Digest': '1'}
+            with TestClient(app) as client:
+                job = client.post('/api/dashboard/refresh', headers=headers, json={
+                    'mode': 'cutoff', 'folders': ['Inbox/UKVI'], 'cutoff': {'days': 50}}).json()['job_id']
+                for _ in range(50):
+                    state = client.get(f'/api/dashboard/jobs/{job}').json()
+                    if state['status'] != 'running':
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(state['status'], 'complete', state.get('error'))
+        self.assertEqual([p for p, _ in source.calls], ['Inbox/UKVI'])
+        self.assertIsNotNone(source.calls[0][1])
 
     def test_deleted_disclaimers_do_not_return_on_restart(self):
         from dashboard_api import save_settings, Settings

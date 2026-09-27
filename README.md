@@ -1,8 +1,38 @@
 # Outlook -> SQLite
 
 Reads mail, splits each message from the chain quoted below it, strips
-boilerplate, stores the result. Standard library only -- nothing to install,
-which matters on a locked-down work machine.
+boilerplate, stores the result, and shows it in a local browser app.
+
+## Quick start (the app)
+
+```powershell
+pip install fastapi uvicorn pywin32
+python serve.py --shortcut     # once: puts an "email app 3" icon on the Desktop
+python serve.py                # or double-click the icon
+```
+
+The app opens at http://127.0.0.1:8000/. Closing its window stops it; clicking
+the icon again while it runs just reopens the page. With classic Outlook,
+Refresh reads through Outlook itself (COM). With only New Outlook, it uses
+Microsoft Graph instead (`pip install msal requests`; a sign-in code appears on
+the first Refresh). Set `OUTLOOK_STORE` to pick a mailbox other than the one
+holding your default Inbox, and `OUTLOOK_DB` to use a database other than
+`mail.db` here.
+
+Files the app needs:
+
+| Where | Files |
+|---|---|
+| top level | `serve.py`, `dashboard_api.py`, `read_api.py`, `db.py`, `schema.sql`, `fetch.py`, `fetch_graph.py`, `splitter.py`, `cleaner.py`, `textnorm.py`, `.gitignore` |
+| `frontend/` | `index.html`, `app.js`, `adapter.js`, `styles.css`, `sample-data.js` |
+
+Optional: `cli.py` and `demo.py` (command line), `test_*.py` and `tests.py`
+(offline checks), and the `.md` documentation.
+
+## Command line
+
+The processing core is standard library only -- nothing to install, which
+matters on a locked-down work machine.
 
 ```
 python3 cli.py mail.db init                    # create tables, seed patterns

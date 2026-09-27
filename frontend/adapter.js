@@ -29,8 +29,10 @@
   async function initial() {
     const data = await request('/state');
     const tree = await request('/folders');
-    data.folders = [...new Set([...data.folders, ...paths(tree)])];
+    data.folderTree = Array.isArray(tree) ? tree : [];
+    data.folders = [...new Set([...data.folders, ...paths(data.folderTree)])];
     data.prompts = window.OutlookDigestSample.prompts.map(prompt => ({ ...prompt }));
+    data.people = await request('/people');
     data.messages = await request('/messages/query', { limit: 500 });
     data.chains = await request('/chains?' + new URLSearchParams({ folder: data.folders[0] || '', limit: '500' }));
     return data;
@@ -43,6 +45,8 @@
     getChains: folder => request('/chains?' + new URLSearchParams({ folder, limit: '500' })),
     refresh: async options => { await job('/refresh', options); return initial(); },
     refreshFolders: async () => paths(await job('/folders/refresh', {})),
+    getPreferences: () => request('/preferences'),
+    savePreferences: prefs => request('/preferences', prefs),
     saveDisclaimers: settings => job('/disclaimers', settings),
     backfill: async settings => { await job('/clean', settings); return initial(); }
   };

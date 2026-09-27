@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import List, Optional
+from typing import List, Optional, Union
 import ipaddress
 import json
 import uuid
@@ -23,14 +23,15 @@ import cleaner
 
 class Filters(BaseModel):
     folder: str = ''
+    folders: List[str] = Field(default_factory=list, max_length=1000)
     fromDate: str = ''
     toDate: str = ''
     days: str = ''
     subject: str = ''
     body: str = ''
-    sender: str = Field('', alias='from')
-    to: str = ''
-    cc: str = ''
+    sender: Union[List[str], str] = Field('', alias='from')
+    to: Union[List[str], str] = ''
+    cc: Union[List[str], str] = ''
     includeCC: bool = False
     evenings: bool = False
     limit: int = Field(500, ge=1, le=5000)
@@ -47,6 +48,11 @@ class Rule(BaseModel):
 class Settings(BaseModel):
     disclaimers: List[Rule]
     autoClean: bool = False
+
+
+class Preferences(BaseModel):
+    folderOrder: Optional[List[str]] = Field(None, max_length=10000)
+    refreshChecked: Optional[List[str]] = Field(None, max_length=10000)
 
 
 class Cutoff(BaseModel):
@@ -91,8 +97,27 @@ def save_settings(conn, settings):
     return read_api.settings(conn)
 
 
-def install(app, database_path, tree_cache=None, store_name=None):
-    """Register /api/dashboard routes without replacing existing /api routes."""
+def save_preferences(conn, prefs):
+    """Store only the fields supplied; the other preference is left as it was."""
+    values = prefs.model_dump() if hasattr(prefs, 'model_dump') else prefs.dict()
+    with conn:
+        for name, key in read_api.PREFERENCE_KEYS.items():
+            if values.get(name) is None:
+                continue
+            if any(len(path) > 1000 for path in values[name]):
+                raise ValueError('Folder path is too long')
+            conn.execute("INSERT OR REPLACE INTO sync_state(key,value,updated_at) VALUES (?,?,datetime('now'))",
+                         (key, json.dumps(list(dict.fromkeys(values[name])), ensure_ascii=False)))
+    return read_api.preferences(conn)
+
+
+def install(app, database_path, tree_cache=None, store_name=None, source=None):
+    """Register /api/dashboard routes without replacing existing /api routes.
+
+    `source` replaces classic Outlook COM for Refresh; it needs
+    folder_tree(progress) and fetch_folder(conn, path, since, progress),
+    e.g. fetch_graph.GraphSource. Leave it None on the work computer.
+    """
     database_path = str(Path(database_path).resolve())
     cache = Path(tree_cache) if tree_cache else Path(database_path).with_suffix('.folders.json')
     router = APIRouter(prefix='/api/dashboard')
@@ -124,7 +149,13 @@ def install(app, database_path, tree_cache=None, store_name=None):
                 return JSONResponse({'detail': 'Cross-site access denied'}, status_code=403)
             if request.method not in ('GET', 'HEAD', 'OPTIONS') and request.headers.get('x-outlook-digest') != '1':
                 return JSONResponse({'detail': 'Missing request header'}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        # Without this, browsers reuse old frontend files by heuristic, so an
+        # updated app.js can run against a stale adapter.js. Unchanged files
+        # still revalidate cheaply as 304 Not Modified.
+        if not request.url.path.startswith('/api/'):
+            response.headers.setdefault('Cache-Control', 'no-cache')
+        return response
 
     def start(action, use_com=False):
         nonlocal busy
@@ -212,6 +243,27 @@ def install(app, database_path, tree_cache=None, store_name=None):
                 raise HTTPException(404, 'Job not found; server may have restarted')
             return dict(jobs[ident])
 
+    @router.get('/people')
+    def people():
+        return read(read_api.people)
+
+    @router.get('/preferences')
+    def get_preferences():
+        return read(read_api.preferences)
+
+    @router.post('/preferences')
+    def put_preferences(prefs: Preferences):
+        # Tiny write, so not queued behind a long refresh job; the busy timeout
+        # rides out a refresh's open transaction instead of failing at once.
+        conn = connection()
+        try:
+            conn.execute('PRAGMA busy_timeout = 30000')
+            return save_preferences(conn, prefs)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        finally:
+            conn.close()
+
     @router.post('/disclaimers')
     def disclaimers(settings: Settings):
         return start(lambda conn, progress: save_settings(conn, settings))
@@ -235,6 +287,12 @@ def install(app, database_path, tree_cache=None, store_name=None):
     @router.post('/folders/refresh')
     def refresh_folders():
         def action(conn, progress):
+            if source is not None:
+                tree = source.folder_tree(progress)
+                temporary = cache.with_suffix('.tmp')
+                temporary.write_text(json.dumps(tree), encoding='utf-8')
+                temporary.replace(cache)
+                return tree
             namespace = fetch._outlook_namespace()
             store = namespace.Folders[store_name] if store_name else namespace.GetDefaultFolder(fetch.OL_FOLDER_INBOX).Parent
             def walk(folder, path):
@@ -254,7 +312,7 @@ def install(app, database_path, tree_cache=None, store_name=None):
             temporary.write_text(json.dumps(tree), encoding='utf-8')
             temporary.replace(cache)
             return tree
-        return start(action, use_com=True)
+        return start(action, use_com=source is None)
 
     @router.post('/refresh')
     def refresh(body: Refresh):
@@ -273,15 +331,18 @@ def install(app, database_path, tree_cache=None, store_name=None):
                     row = conn.execute('SELECT value FROM sync_state WHERE key=?', ('last_fetch:' + path,)).fetchone()
                     if row:
                         since = datetime.fromisoformat(row[0].replace('Z', '+00:00')) - timedelta(minutes=5)
-                fetch.fetch_messages(conn, folder=path, since_days=0, since=since,
-                                     use_restrict=False, strict=True, log=lambda *a: None)
+                if source is not None:
+                    source.fetch_folder(conn, path, since, progress)
+                else:
+                    fetch.fetch_messages(conn, folder=path, since_days=0, since=since,
+                                         use_restrict=False, strict=True, log=lambda *a: None)
             progress('Normalizing and splitting')
             splitter.split_messages(conn, log=lambda *a: None)
             if read_api.settings(conn)['autoClean']:
                 progress('Cleaning')
                 cleaner.clean_messages(conn, log=lambda *a: None)
             return read_api.dashboard_state(conn)
-        return start(action, use_com=True)
+        return start(action, use_com=source is None)
 
     @app.on_event('shutdown')
     def shutdown():

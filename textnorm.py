@@ -6,11 +6,12 @@ import re
 from html.parser import HTMLParser
 
 # Bump when text conversion or normalization changes; both processors include it.
-CODE_VERSION = 3
+CODE_VERSION = 4
 
-# Zero-width and soft-hyphen characters. Invisible on screen, and they sit
-# inside words where they silently break literal matching.
-_INVISIBLE = re.compile(r"[​‌‍⁠﻿­]")
+# Zero-width, soft-hyphen, direction-mark and grapheme-joiner characters.
+# Invisible on screen; they sit inside words where they silently break
+# literal matching, and marketing mail pads its preview text with them.
+_INVISIBLE = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad\u200e\u200f\u034f]")
 # Spaces that are not U+0020. Outlook emits non-breaking spaces constantly.
 _ODD_SPACE = re.compile(r"[   -   　]")
 

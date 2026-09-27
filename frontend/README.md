@@ -42,9 +42,15 @@ storage. Clipboard availability depends on browser policy; a fallback supports
 local-file previews where permitted. Raw HTML is displayed as **text**, never
 executed or inserted as message markup.
 
-Folder drag-order is the only browser-stored preference. It changes the dashboard
-list only; it never moves or renames an Outlook folder. Alt+Up/Down provides the
-keyboard equivalent while a folder name is focused.
+The Folders tab's drag-order and ticked Refresh boxes are saved in the database
+(`sync_state`) through `getPreferences` / `savePreferences`, so they survive
+server restarts, cleared browser data and a different browser. A copy is also
+kept in browser storage per mailbox account, used in preview mode or if the
+database cannot be reached; on first connection an empty database adopts that
+browser copy. The Database tab's folder filter is not saved. Drag-order changes the
+dashboard list only; it never moves or renames an Outlook folder. Folders reorder
+among siblings and move with their subfolders. Alt+Up/Down provides the keyboard
+equivalent while a folder name is focused.
 
 ## Connect the FastAPI backend
 
@@ -52,20 +58,21 @@ keyboard equivalent while a folder name is focused.
 when the page is served by the local server. Opening `index.html` directly keeps
 the synthetic preview mode. The browser never talks to Outlook or SQLite.
 
-See [`WORK_SERVER_MERGE.md`](../WORK_SERVER_MERGE.md) for the two additions to
-the existing work server. Do not put Outlook access, SQL or disclaimer matching
-in `app.js`.
+`serve.py` is the server; see the top of the main README to start it. Do not
+put Outlook access, SQL or disclaimer matching in `app.js`.
 
 Methods may return values directly or promises:
 
 | Method | Input | Return |
 | --- | --- | --- |
 | `getInitialData()` | None | Complete data object described below; required |
-| `queryMessages(filters)` | Filter form values | Message array |
+| `queryMessages(filters)` | Filter form values; `from`, `to`, `cc` are arrays (any may match) | Message array |
 | `getMessage(key)` / `getChain(key)` | Stable message or chain key | One body, loaded only when needed |
 | `getChains(folder)` | Stored folder path | Chain metadata for that folder |
 | `refresh(options)` | `mode`: `last`, `cutoff` or `start`; selected `folders`; `cutoff: {days,hours,minutes}` | Complete updated data object |
 | `refreshFolders()` | None | Folder name array |
+| `getPreferences()` | None | `{folderOrder, refreshChecked}`; each a path array or `null` if never saved |
+| `savePreferences(prefs)` | Either or both of `folderOrder`, `refreshChecked` | Saved preferences; throw on failure |
 | `saveDisclaimers(settings)` | `{disclaimers, autoClean}` | Resolve on success; throw on failure |
 | `backfill(settings)` | `{disclaimers, autoClean}` | Resolve on completion; throw on failure |
 

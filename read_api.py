@@ -1,6 +1,7 @@
 """Database reads and chain formatting. No web framework or Outlook dependency."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import json
 import sqlite3
 
 import cleaner
@@ -70,6 +71,30 @@ def summary(conn, row):
                 lastSeen=row.get('first_ingested') or '')
 
 
+def _terms(value):
+    """One search term or a list of them; any term may match."""
+    items = [value] if isinstance(value, str) else (value or [])
+    terms = list(dict.fromkeys(item.strip() for item in items if isinstance(item, str) and item.strip()))
+    if len(terms) > 200:
+        raise ValueError('Pick at most 200 people per field')
+    return terms
+
+
+def people(conn):
+    """Distinct senders, To and CC recipients for the Database-tab pickers."""
+    def entries(sql):
+        found = {}
+        for name, addr, count in conn.execute(sql):
+            value = addr or name
+            if value and value not in found:
+                found[value] = dict(label=_person(name, addr) if name != addr else addr, value=value, count=count)
+        return sorted(found.values(), key=lambda p: p['label'].lower())
+    result = {'from': entries("SELECT sender_name, sender_addr, COUNT(*) FROM messages GROUP BY sender_name, sender_addr ORDER BY COUNT(*) DESC")}
+    for role in ('to', 'cc'):
+        result[role] = entries(f"SELECT name, addr, COUNT(*) FROM participants WHERE role='{role}' GROUP BY name, addr ORDER BY COUNT(*) DESC")
+    return result
+
+
 def dashboard_messages(conn, filters=None):
     """Return bounded metadata only. Bodies are requested separately."""
     configure(conn)
@@ -80,6 +105,11 @@ def dashboard_messages(conn, filters=None):
     clauses, params = [], []
     if f.get('folder'):
         clauses.append('m.folder=?'); params.append(f['folder'])
+    folders = list(dict.fromkeys(f.get('folders') or []))
+    if len(folders) > 1000:
+        raise ValueError('Select at most 1000 folders')
+    if folders:
+        clauses.append(f"m.folder IN ({','.join('?' * len(folders))})"); params.extend(folders)
     for field, op in (('fromDate', '>='), ('toDate', '<=')):
         if f.get(field):
             datetime.strptime(f[field], '%Y-%m-%d')
@@ -93,17 +123,22 @@ def dashboard_messages(conn, filters=None):
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         clauses.append('m.received_time >= ?'); params.append(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
     split_version, clean_version = versions(conn)
-    for field, sql in [('subject', 'm.subject'), ('from', "COALESCE(m.sender_name,'') || ' ' || COALESCE(m.sender_addr,'')")]:
-        if f.get(field):
-            clauses.append(f'instr(lower({sql}), lower(?)) > 0'); params.append(f[field])
+    if f.get('subject'):
+        clauses.append('instr(lower(m.subject), lower(?)) > 0'); params.append(f['subject'])
+    senders = _terms(f.get('from'))
+    if senders:
+        match = "instr(lower(COALESCE(m.sender_name,'') || ' ' || COALESCE(m.sender_addr,'')), lower(?)) > 0"
+        clauses.append('(' + ' OR '.join([match] * len(senders)) + ')'); params.extend(senders)
     if f.get('body'):
         clauses.append("m.textnorm_version=? AND m.boundary_patterns_version=? AND instr(lower(CASE WHEN m.cleaner_version=? AND m.cleaned_unique_body_text IS NOT NULL THEN m.cleaned_unique_body_text ELSE COALESCE(m.unique_body_text,'') END),lower(?))>0")
         params.extend([textnorm.CODE_VERSION, split_version, clean_version, f['body']])
     for field in ('to', 'cc'):
-        if f.get(field):
+        terms = _terms(f.get(field))
+        if terms:
             roles = "('to','cc')" if field == 'to' and f.get('includeCC') else f"('{field}')"
-            clauses.append(f"EXISTS (SELECT 1 FROM participants p WHERE p.msg_key=m.msg_key AND p.role IN {roles} AND instr(lower(COALESCE(p.name,'') || ' ' || p.addr),lower(?))>0)")
-            params.append(f[field])
+            match = ' OR '.join(["instr(lower(COALESCE(p.name,'') || ' ' || p.addr),lower(?))>0"] * len(terms))
+            clauses.append(f"EXISTS (SELECT 1 FROM participants p WHERE p.msg_key=m.msg_key AND p.role IN {roles} AND ({match}))")
+            params.extend(terms)
     if f.get('evenings'):
         clauses.append('london_hour(m.received_time) >= 18 AND london_hour(m.received_time) < 22')
     where = ' AND '.join(clauses) or '1=1'
@@ -162,6 +197,24 @@ def settings(conn):
     rules = rows(conn, 'SELECT pattern_id AS id, label, pattern_text AS text, kind, enabled FROM disclaimer_patterns ORDER BY pattern_id')
     auto = conn.execute("SELECT value FROM sync_state WHERE key='auto_clean'").fetchone()
     return dict(disclaimers=rules, autoClean=bool(auto and auto[0] == '1'))
+
+
+PREFERENCE_KEYS = {'folderOrder': 'ui_folder_order', 'refreshChecked': 'ui_refresh_checked'}
+
+
+def preferences(conn):
+    """Folders-tab order and ticked Refresh folders; None where never saved."""
+    result = dict.fromkeys(PREFERENCE_KEYS)
+    for name, key in PREFERENCE_KEYS.items():
+        row = conn.execute('SELECT value FROM sync_state WHERE key=?', (key,)).fetchone()
+        if row and row[0]:
+            try:
+                value = json.loads(row[0])
+            except ValueError:
+                continue
+            if isinstance(value, list):
+                result[name] = [item for item in value if isinstance(item, str)]
+    return result
 
 
 def dashboard_state(conn):

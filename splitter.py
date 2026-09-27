@@ -30,64 +30,107 @@ SPLITTER_CODE_VERSION = 2
 # marker from being ruined by body text on the following line.
 MAX_JOIN = 3
 
-# Seeded on first init. Each carries a real snippet it must cut at line 0.
-DEFAULT_PATTERNS = [
-    dict(
-        label="Outlook header block (EN)",
-        line_regex=r"^\s*From:\s*\S",
-        confirm_regex=r"^\s*(Sent|Date)\s*:",
+# Localised quote markers, one row per language. To support another language,
+# add a row here: db.init seeds its patterns on the next start, and existing
+# rows (including your own edits) are left alone. Words are plain text, not
+# regex; accented and unaccented spellings can both be listed.
+#
+#   from_label    Outlook header first line, e.g. "From: Jane <jane@acme.com>"
+#   sent_labels   any of these must start one of the next few lines
+#   original      "-----Original Message-----" wording, or None
+#   wrote         Gmail/Apple attribution line as (regex, example), or None;
+#                 an email address on the same line is always required
+#   verified      False until checked against real mail from that language
+LANGUAGES = [
+    dict(code="EN", from_label="From", sent_labels=["Sent", "Date"],
+         original="Original Message", verified=True,
+         wrote=(r"^\s*On\b.*\bwrote:\s*$",
+                "On Fri, 7 Aug 2026 at 20:39, Khalil, Adam <Adam.Khalil@gs.com> wrote:")),
+    dict(code="FR", from_label="De", sent_labels=["Envoyé", "Envoye", "Date"],
+         original="Message d'origine", verified=False,
+         wrote=(r"^\s*Le\b.*\ba [ée]crit\s*:\s*$",
+                "Le ven. 7 août 2026 à 20:39, Adam Khalil <adam@acme.com> a écrit :")),
+    dict(code="DE", from_label="Von", sent_labels=["Gesendet", "Datum"],
+         original="Ursprüngliche Nachricht", verified=False,
+         wrote=(r"^\s*Am\b.*\bschrieb\b.*:\s*$",
+                "Am Fr., 7. Aug. 2026 um 20:39 Uhr schrieb Adam Khalil <adam@acme.com>:")),
+    dict(code="ES", from_label="De", sent_labels=["Enviado", "Fecha"],
+         original="Mensaje original", verified=False,
+         wrote=(r"^\s*El\b.*\bescribi[óo]\s*:\s*$",
+                "El vie, 7 ago 2026 a las 20:39, Adam Khalil (<adam@acme.com>) escribió:")),
+    dict(code="IT", from_label="Da", sent_labels=["Inviato", "Data"],
+         original="Messaggio originale", verified=False,
+         wrote=(r"^\s*Il\b.*\bha scritto\s*:\s*$",
+                "Il giorno ven 7 ago 2026 alle ore 20:39 Adam Khalil <adam@acme.com> ha scritto:")),
+    dict(code="NL", from_label="Van", sent_labels=["Verzonden", "Datum"],
+         original="Oorspronkelijk bericht", verified=False,
+         wrote=(r"^\s*Op\b.*\bschreef\b.*:\s*$",
+                "Op vr 7 aug. 2026 om 20:39 schreef Adam Khalil <adam@acme.com>:")),
+    dict(code="ZH-Hans", from_label="发件人", sent_labels=["发送时间", "日期", "时间"],
+         original="原始邮件", verified=True,
+         wrote=(r"写道\s*[:：]\s*$",
+                "Adam Khalil <adam@acme.com> 于2026年8月7日周五 20:39写道：")),
+    dict(code="ZH-Hant", from_label="寄件者", sent_labels=["寄件日期", "傳送時間", "日期", "時間"],
+         original="原始郵件", verified=False,
+         wrote=(r"寫道\s*[:：]\s*$",
+                "Adam Khalil <adam@acme.com> 於 2026年8月7日 週五 下午8:39 寫道：")),
+    dict(code="JA", from_label="差出人", sent_labels=["送信日時", "日付", "送信日"],
+         original="元のメッセージ", verified=False,
+         wrote=(r"のメール\s*[:：]\s*$",
+                "2026/08/07 20:39、Adam Khalil <adam@acme.com>のメール:")),
+    dict(code="AR", from_label="من", sent_labels=["تاريخ الإرسال", "أرسلت", "التاريخ"],
+         original="الرسالة الأصلية", verified=False,
+         wrote=(r"^\s*في\b.*\bكتب\b.*:\s*$",
+                "في الجمعة، 7 أغسطس 2026، 20:39 كتب Adam Khalil <adam@acme.com>:")),
+]
+
+_COLON = r"\s*[:：]"
+_EMAIL = r"<[^<>@\s]+@[^<>\s]+>"
+
+
+def _words(words):
+    return "(" + "|".join(re.escape(w) for w in words) + ")"
+
+
+def language_patterns(lang):
+    """Boundary-pattern rows for one LANGUAGES entry."""
+    code, note = lang["code"], ("" if lang["verified"] else
+                                "Unverified against real mail -- check before trusting.")
+    rows = [dict(
+        label=f"Outlook header block ({code})",
+        line_regex=rf"^\s*{re.escape(lang['from_label'])}{_COLON}\s*\S",
+        confirm_regex=rf"^\s*{_words(lang['sent_labels'])}{_COLON}",
         priority=10,
-        example_block=(
-            "From: Jane Patel <jane.patel@acme.com>\n"
-            "Sent: 03 September 2026 08:30\n"
-            "To: Carl Wei\n"
-            "Subject: RE: vendor onboarding"
-        ),
-        notes="Outlook's own reply/forward header. 'From:' alone is common in "
-              "ordinary prose, so a following 'Sent:'/'Date:' is required.",
-    ),
-    dict(
-        label="Outlook header block (FR)",
-        line_regex=r"^\s*De\s*:\s*\S",
-        confirm_regex=r"^\s*(Envoyé|Envoye|Date)\s*:",
-        priority=10,
-        example_block=(
-            "De : Jane Patel <jane.patel@acme.com>\n"
-            "Envoyé : 3 septembre 2026 08:30\n"
-            "Objet : RE: vendor onboarding"
-        ),
-        notes="Unverified against real French mail -- check before trusting.",
-    ),
-    dict(
-        label="Outlook header block (DE)",
-        line_regex=r"^\s*Von\s*:\s*\S",
-        confirm_regex=r"^\s*(Gesendet|Datum)\s*:",
-        priority=10,
-        example_block=(
-            "Von: Jane Patel <jane.patel@acme.com>\n"
-            "Gesendet: 3. September 2026 08:30\n"
-            "Betreff: RE: vendor onboarding"
-        ),
-        notes="Unverified against real German mail -- check before trusting.",
-    ),
-    dict(
-        label="Gmail / Apple / mobile On-wrote",
-        line_regex=r"^\s*On\b.*\bwrote:\s*$",
-        require_regex=r"<[^<>@\s]+@[^<>\s]+>",
-        priority=20,
-        example_block=(
-            "On Fri, 7 Aug 2026 at 20:39, Khalil, Adam <Adam.Khalil@gs.com> wrote:\n"
-            "> earlier text"
-        ),
-        notes="An address on the same line is required, otherwise the sentence "
-              "'On the topic of the memo he wrote:' matches.",
-    ),
-    dict(
-        label="Original message marker",
-        line_regex=r"^\s*-{2,}\s*Original Message\s*-{2,}\s*$",
-        priority=5,
-        example_block="----- Original Message -----\nFrom: someone",
-    ),
+        example_block=(f"{lang['from_label']}: Jane Patel <jane.patel@acme.com>\n"
+                       f"{lang['sent_labels'][0]}: 2026-09-03 08:30\n"
+                       "RE: vendor onboarding"),
+        notes=("Outlook's reply/forward header. The first label alone is common "
+               "in prose, so a following sent/date label is required. " + note).strip(),
+    )]
+    if lang.get("original"):
+        rows.append(dict(
+            label="Original message marker" + ("" if code == "EN" else f" ({code})"),
+            line_regex=rf"^\s*-{{2,}}\s*{re.escape(lang['original'])}\s*-{{2,}}\s*$",
+            priority=5,
+            example_block=f"----- {lang['original']} -----\n{lang['from_label']}: someone",
+            notes=note or None,
+        ))
+    if lang.get("wrote"):
+        regex, example = lang["wrote"]
+        rows.append(dict(
+            label="Gmail / Apple / mobile On-wrote" + ("" if code == "EN" else f" ({code})"),
+            line_regex=regex,
+            require_regex=_EMAIL,
+            priority=20,
+            example_block=example + "\n> earlier text",
+            notes=("An address on the same line is required, so ordinary "
+                   "sentences ending in 'wrote:' do not match. " + note).strip(),
+        ))
+    return rows
+
+
+# Seeded on first init. Each carries a snippet it must cut at line 0.
+DEFAULT_PATTERNS = [row for lang in LANGUAGES for row in language_patterns(lang)] + [
     dict(
         label="Forwarded message marker",
         line_regex=r"^\s*-{2,}\s*Forwarded message\s*-{2,}\s*$",

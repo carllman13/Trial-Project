@@ -100,18 +100,39 @@ Three separate conditions, because they do different work:
 
 ## Seed patterns
 
-| label | line_regex | require_regex | confirm_regex |
-|---|---|---|---|
-| Gmail / Apple On-wrote | `^\s*On\b.*\bwrote:\s*$` | `<[^<>@\s]+@[^<>\s]+>` | |
-| Outlook header block (EN) | `^\s*From:\s*\S` | | `^\s*(Sent\|Date):` |
-| Outlook header block (FR) | `^\s*De\s*:\s*\S` | | `^\s*(Envoyé\|Date)\s*:` |
-| Outlook header block (DE) | `^\s*Von:\s*\S` | | `^\s*Gesendet:` |
-| Original message marker | `^\s*-+\s*Original Message\s*-+\s*$` | | |
-| Forwarded message marker | `^\s*-+\s*Forwarded message\s*-+\s*$` | | |
+Built from `splitter.LANGUAGES`: one row per language with plain words, no
+regex to write for the common cases. Each language yields up to three
+patterns:
 
-French and German rows are guesses at the localised forms -- verify against
-real mail before trusting them. A wrong pattern that never fires is visible in
-the report; a missing one is not.
+| Pattern | Built from | Example (Simplified Chinese) |
+|---|---|---|
+| Outlook header block (code) | `from_label` + any of `sent_labels` within 5 lines | `发件人: …` then `发送时间: …` |
+| Original message marker (code) | `original` | `-----原始邮件-----` |
+| Gmail / Apple On-wrote (code) | `wrote` regex; an email address on the line is required | `… <a@b.com> 于2026年8月7日 20:39写道：` |
+
+Colons may be ASCII `:` or full-width `：`. Languages seeded: EN, FR, DE, ES,
+IT, NL, ZH-Hans, ZH-Hant, JA, AR, plus the English "Forwarded message" marker.
+
+Only EN and ZH-Hans are `verified` against real mail. The others are the
+standard Outlook/Gmail wordings -- check them against real mail. A wrong
+pattern that never fires is visible in the report; a missing one is not.
+
+### Adding a language
+
+1. Add one row to `LANGUAGES` in `splitter.py`, e.g.
+
+   ```python
+   dict(code="PT", from_label="De", sent_labels=["Enviado", "Data"],
+        original="Mensagem original", verified=False,
+        wrote=(r"^\s*Em\b.*\bescreveu\s*:\s*$",
+               "Em sex., 7 de ago. de 2026 às 20:39, Adam <adam@acme.com> escreveu:")),
+   ```
+
+2. Restart the app (or run `db.init`). New rows are inserted; existing rows,
+   including your edits, are kept. Every message re-splits automatically
+   because the pattern fingerprint changes.
+3. Run the self-test (`splitter.test_patterns`) to confirm each new pattern
+   cuts its own example.
 
 ## Algorithm
 

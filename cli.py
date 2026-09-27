@@ -2,6 +2,7 @@
 
     python3 cli.py mail.db init            create tables, seed default patterns
     python3 cli.py mail.db fetch           read mail from classic Outlook
+    python3 cli.py mail.db fetch-graph     read mail via Microsoft Graph
     python3 cli.py mail.db demo            load a fake mailbox to try things on
     python3 cli.py mail.db textnorm        cache readable plain text
     python3 cli.py mail.db split           find quoted chains
@@ -109,8 +110,8 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("db")
     ap.add_argument("command", choices=[
-        "init", "fetch", "demo", "textnorm", "split", "clean", "run", "report",
-        "test-patterns", "unsplit", "list-unresolved"])
+        "init", "fetch", "fetch-graph", "demo", "textnorm", "split", "clean",
+        "run", "report", "test-patterns", "unsplit", "list-unresolved"])
     ap.add_argument("--rebuild", action="store_true", help="redo every row")
     ap.add_argument("--dry-run", action="store_true", help="change nothing")
     ap.add_argument("--limit", type=int, default=None,
@@ -140,6 +141,16 @@ def main():
                 conn, folder=args.folder, recurse=args.recurse,
                 since_days=args.since_days, use_restrict=not args.no_restrict,
                 limit=args.limit)
+        elif args.command == "fetch-graph":
+            import fetch_graph
+            # Default: every mail folder. Pass --folder inbox (no --recurse)
+            # for Inbox only; --folder inbox --recurse for Inbox + children.
+            folder = args.folder or "all"
+            fetch_graph.fetch_messages(
+                conn, db_path=args.db,
+                folder=folder,
+                since_days=args.since_days, limit=args.limit,
+                recurse=args.recurse and folder != "all")
         elif args.command == "demo":
             import demo
             demo.load(conn)
