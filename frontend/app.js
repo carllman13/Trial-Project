@@ -7,6 +7,11 @@
   // browser storage is a fallback for preview mode or an unreachable server.
   const folderOrderKey = 'outlook-digest-folder-order-v1';
   const checkedKey = 'outlook-digest-refresh-checked-v1';
+  const collapsedKey = 'outlook-digest-folder-collapsed-v1';
+  const dbCollapsedKey = 'outlook-digest-db-folder-collapsed-v1';
+  const layoutKey = 'outlook-digest-layout-widths-v1';
+  const queueSplitKey = 'outlook-digest-queue-splits-v1';
+  const tableColumnsKey = 'outlook-digest-table-columns-v1';
   const prefName = { [folderOrderKey]: 'folderOrder', [checkedKey]: 'refreshChecked' };
   // Per account, so the synthetic preview never overwrites a real mailbox's settings.
   const storageKey = base => `${base}:${data.account}`;
@@ -45,7 +50,8 @@
     }
   }
   function orderedFolders(folders) {
-    const saved = readPref(folderOrderKey) || [];
+    const saved = readPref(folderOrderKey);
+    if (!saved) return [...folders].reverse();
     const available = new Set(folders);
     return [...saved.filter(folder => available.delete(folder)), ...folders.filter(folder => available.has(folder))];
   }
@@ -58,6 +64,94 @@
     return new Set(saved.filter(folder => available.has(folder)));
   }
   function saveChecked() { writePref(checkedKey, [...state.checked]); }
+  function loadCollapsed(base) {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey(base)) || '[]');
+      return new Set(Array.isArray(value) ? value : []);
+    } catch { return new Set(); }
+  }
+  function saveCollapsed(scope) {
+    const base = scope === 'db' ? dbCollapsedKey : collapsedKey;
+    try { localStorage.setItem(storageKey(base), JSON.stringify([...scopeCollapsed(scope)])); } catch { /* UI state can remain session-only. */ }
+  }
+  const layoutDefaults = { folders: [213, 162, 600, 590], database: [175, 700, 327] };
+  const layoutMinimums = { folders: [160, 100, 260, 220], database: [130, 320, 220] };
+  const tableColumnDefaults = {
+    chains: [
+      { key: 'count', label: '#', width: 4 }, { key: 'folder', label: 'Folder', width: 22 },
+      { key: 'received', label: 'Last reply (London)', width: 14 }, { key: 'subject', label: 'Subject', width: 26 },
+      { key: 'from', label: 'From', width: 17 }, { key: 'to', label: 'To', width: 17 },
+    ],
+    messages: [
+      { key: 'received', label: 'Received (London)', width: 14 }, { key: 'from', label: 'From', width: 15 },
+      { key: 'to', label: 'To', width: 15 }, { key: 'subject', label: 'Subject', width: 30 },
+      { key: 'folder', label: 'Folder', width: 22 }, { key: 'attachments', label: 'Att', width: 4 },
+    ],
+  };
+  function loadLayoutWidths() {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey(layoutKey)) || '{}');
+      for (const name of Object.keys(layoutDefaults)) {
+        if (Array.isArray(value[name]) && value[name].every(width => Number.isFinite(width) && width > 0)) state.layoutWidths[name] = value[name];
+      }
+    } catch { /* Default widths remain in use. */ }
+  }
+  function saveLayoutWidths() {
+    try { localStorage.setItem(storageKey(layoutKey), JSON.stringify(state.layoutWidths)); } catch { /* UI state can remain session-only. */ }
+  }
+  function loadQueueSplits() {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey(queueSplitKey)) || '{}');
+      for (const name of ['folders', 'database']) if (Number.isFinite(value[name]) && value[name] > 0 && value[name] < 100) state.queueSplits[name] = value[name];
+    } catch { /* Equal sections remain in use. */ }
+  }
+  function saveQueueSplits() {
+    try { localStorage.setItem(storageKey(queueSplitKey), JSON.stringify(state.queueSplits)); } catch { /* UI state can remain session-only. */ }
+  }
+  function loadTableColumns() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey(tableColumnsKey)) || '{}');
+      for (const kind of Object.keys(tableColumnDefaults)) {
+        if (!Array.isArray(saved[kind])) continue;
+        const defaults = new Map(tableColumnDefaults[kind].map(column => [column.key, column]));
+        if (saved[kind].length !== defaults.size || saved[kind].some(column => !defaults.has(column.key) || !Number.isFinite(column.width) || column.width <= 0)) continue;
+        state.tableColumns[kind] = saved[kind].map(column => ({ ...defaults.get(column.key), width: column.width }));
+      }
+    } catch { /* Default column order and widths remain in use. */ }
+  }
+  function saveTableColumns() {
+    try {
+      const value = Object.fromEntries(Object.entries(state.tableColumns).map(([kind, columns]) => [kind, columns.map(({ key, width }) => ({ key, width }))]));
+      localStorage.setItem(storageKey(tableColumnsKey), JSON.stringify(value));
+    } catch { /* UI state can remain session-only. */ }
+  }
+  function layoutTemplate(name, widths, count) {
+    const minimums = layoutMinimums[name];
+    return widths.slice(0, count).map((width, index) => `${index ? '10px ' : ''}minmax(${minimums[index]}px, ${width}fr)`).join(' ');
+  }
+  function installResizeHandles() {
+    const layout = app.querySelector('.folders-layout, .database-layout');
+    if (!layout) return;
+    const name = layout.classList.contains('folders-layout') ? 'folders' : 'database';
+    const panels = [...layout.children];
+    const saved = state.layoutWidths[name];
+    if (saved) {
+      const widths = layoutDefaults[name].map((fallback, index) => saved[index] || fallback);
+      layout.style.gridTemplateColumns = layoutTemplate(name, widths, panels.length);
+    }
+    panels.slice(0, -1).forEach((panel, index) => {
+      const handle = document.createElement('div');
+      handle.className = 'resize-handle';
+      handle.dataset.resizeLayout = name;
+      handle.dataset.resizeIndex = index;
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'separator');
+      handle.setAttribute('aria-orientation', 'vertical');
+      handle.setAttribute('aria-label', 'Resize adjacent sections');
+      handle.title = 'Drag to resize sections';
+      panel.after(handle);
+    });
+  }
   const parentOf = path => String(path).split('/').slice(0, -1).join('/');
   const inBranch = (path, root) => path === root || path.startsWith(root + '/');
   /** Reorder among siblings only; a folder always moves with its subfolders. */
@@ -174,8 +268,7 @@
     const picked = [...state.dbFolders];
     const label = !picked.length ? '(all)' : picked.length === 1 ? picked[0].split('/').pop() : `${picked.length} folders`;
     const tree = pickerTree();
-    const rootRow = `<div class="tree-row">${twisty('db', ROOT_KEY, tree.length > 0)}${branchBox('db', ROOT_KEY, tree.flatMap(branchOf), data.account)}<span class="tree-name">${esc(data.account)}</span></div>`;
-    const popup = `<div class="picker-popup"><div class="picker-bar"><input id="db-folder-filter" placeholder="Filter folders…" aria-label="Filter folders" value="${esc(state.dbFolderFilter)}">${button('Clear', 'db-folders-clear', 'type="button"')}${button('Done', 'db-folders-done', 'type="button"')}</div><div class="picker-tree">${tree.length ? rootRow + (isOpen('db', ROOT_KEY) ? pickerRows(tree) : '') : '<div class="empty">No matching folders</div>'}</div></div>`;
+    const popup = `<div class="picker-popup"><div class="picker-bar"><input id="db-folder-filter" placeholder="Filter folders…" aria-label="Filter folders" value="${esc(state.dbFolderFilter)}">${button('Clear', 'db-folders-clear', 'type="button"')}${button('Done', 'db-folders-done', 'type="button"')}</div><div class="picker-tree">${tree.length ? pickerRows(tree, -1) : '<div class="empty">No matching folders</div>'}</div></div>`;
     return `<div class="filter-field folder-picker">Folder<button type="button" class="picker-toggle" data-action="toggle-db-folders" aria-expanded="${state.dbFolderOpen}" title="${esc(picked.join('\n'))}">${esc(label)}<span>▾</span></button>${state.dbFolderOpen ? popup : ''}</div>`;
   }
   // Sample data has no people list; derive one from the preview messages.
@@ -253,7 +346,7 @@
     render();
   }
   let data = window.OutlookDigestSample;
-  const state = { tab: 'folders', folder: 'Humain', checked: new Set(data.folders.slice(0, 7)), selected: new Set(), chain: 'chain-1', message: 'message-1', chains: [], messages: [], filter: '', results: data.messages, raw: false, detail: true, showSystem: false, collapsed: new Set(), dbFolders: new Set(), dbCollapsed: new Set(), dbFolderOpen: false, dbFolderFilter: '', people: { from: [], to: [], cc: [] }, peopleQuery: { from: '', to: '', cc: '' }, peopleOpen: null, peopleActive: -1 };
+  const state = { tab: 'folders', folder: 'Humain', checked: new Set(data.folders.slice(0, 7)), selected: new Set(), chain: 'chain-1', message: 'message-1', chains: [], messages: [], filter: '', results: data.messages, raw: false, detail: true, showSystem: false, collapsed: new Set(), dbFolders: new Set(), dbCollapsed: new Set(), dbFolderOpen: false, dbFolderFilter: '', layoutWidths: { folders: null, database: null }, queueSplits: { folders: 50, database: 50 }, tableColumns: Object.fromEntries(Object.entries(tableColumnDefaults).map(([kind, columns]) => [kind, columns.map(column => ({ ...column }))])), people: { from: [], to: [], cc: [] }, peopleQuery: { from: '', to: '', cc: '' }, peopleOpen: null, peopleActive: -1 };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const date = value => !value ? '' : new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)).replace(',', ' ·');
   const button = (label, action, extra = '', primary = false) => `<button class="${primary ? 'primary' : ''}" data-action="${action}" ${extra}>${label}</button>`;
@@ -276,21 +369,31 @@
   function queue(kind) {
     return `<div class="queue-box">Queued ${kind}: ${state[kind].length} ${button('Copy queued', 'copy-queue', `data-kind="${kind}"`)}<div class="queue-items">${state[kind].map(id => { const item = data[kind].find(x => x.id === id); return `<span class="chip" title="${esc(item?.subject)}">${esc(item?.subject)} ${button('×', 'remove-queue', `data-kind="${kind}" data-id="${esc(id)}" aria-label="Remove queued item"`)}</span>`; }).join('')}</div>${button('Clear', 'clear-queue', `data-kind="${kind}"`)}</div>`;
   }
+  function installDropQueues() {
+    const folderColumn = app.querySelector('.folders-layout .queue-column');
+    const column = folderColumn || app.querySelector('.database-layout > aside.panel:first-child');
+    if (!column) return;
+    const name = folderColumn ? 'folders' : 'database';
+    const messageCaption = folderColumn ? 'Queues the latest individual message from each dragged chain.' : 'Queues each dragged message individually.';
+    const messageInstruction = folderColumn ? 'Drag one or more chain rows<br>from the table.' : 'Drag one or more selected rows<br>from the table on the right.';
+    column.classList.add('dual-queues');
+    column.dataset.queueLayout = name;
+    column.style.gridTemplateRows = `minmax(120px, ${state.queueSplits[name]}fr) 9px minmax(120px, ${100 - state.queueSplits[name]}fr)`;
+    column.innerHTML = `<section class="folder-drop-group"><div class="section-title">Drop for messages</div><div class="drop-caption">${messageCaption}</div><div class="dropzone" data-drop="messages"><strong>Single or Multi MSG Drop</strong><span>${messageInstruction}</span></div>${queue('messages')}</section><div class="queue-section-resize" data-queue-resize="${name}" role="separator" aria-orientation="horizontal" aria-label="Resize message and chain queue sections" tabindex="0" title="Drag to resize message and chain sections"></div><section class="folder-drop-group"><div class="section-title">Drop for chains</div><div class="drop-caption">${folderColumn ? 'Queues each complete dragged chain.' : 'Queues the full chain containing each dragged message.'}</div><div class="dropzone chains" data-drop="chains"><strong>Full Latest Chain Drop</strong><span>${folderColumn ? 'Drag one or more chain rows;<br>Copy queued joins all full chains.' : 'Drag one or more selected rows;<br>chips are labelled «count | subject».'}</span></div>${queue('chains')}</section>`;
+  }
   function prompts() {
     return `<section class="prompts"><div class="prompts-heading"><strong>Prompts</strong><span>Click Copy to copy prompt + queued chains.</span></div><div class="prompts-list">${data.prompts.map((p, i) => `<div class="prompt-row">${button('Copy', 'copy-prompt', `data-index="${i}"`)}<span class="triangle">▸</span><div class="prompt-fields"><input aria-label="Prompt title" data-prompt="${i}" data-field="title" value="${esc(p.title)}"><textarea aria-label="Prompt text" data-prompt="${i}" data-field="text">${esc(p.text)}</textarea></div>${button('×', 'remove-prompt', `data-index="${i}" aria-label="Remove prompt"`)}</div>`).join('')}</div></section>`;
   }
   function table(rows, kind) {
     const chains = kind === 'chains';
-    const cols = chains ? [['count', '#', '4%'], ['folder', 'Folder', '22%'], ['received', 'Last reply (London)', '14%'], ['subject', 'Subject', '26%'], ['from', 'From', '17%'], ['to', 'To', '17%']] : [['received', 'Received (London) ▼', '14%'], ['from', 'From ↕', '15%'], ['to', 'To ↕', '15%'], ['subject', 'Subject ↕', '32%'], ['folder', 'Folder ↕', '22%'], ['attachments', 'Att ↕', '4%']];
-    return `<div class="table-scroll"><table aria-label="${kind}"><colgroup>${cols.map(c => `<col style="width:${c[2]}">`).join('')}</colgroup><thead><tr>${cols.map(c => `<th scope="col" tabindex="0" data-sort="${c[0]}" data-kind="${kind}">${c[1]}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr draggable="true" tabindex="0" data-row="${esc(row.id)}" data-kind="${kind}" class="${state.selected.has(row.id) || (state.selected.size === 0 && (chains ? state.chain : state.message) === row.id) ? 'selected' : ''}" aria-selected="${state.selected.has(row.id)}">${cols.map(([key]) => `<td title="${esc(row[key])}" class="${key === 'count' || key === 'attachments' ? 'number' : ''}">${esc(key === 'received' ? date(row[key]) : row[key])}</td>`).join('')}</tr>`).join('')}</tbody></table>${rows.length ? '' : '<div class="empty">No results</div>'}</div>`;
+    const cols = state.tableColumns[kind];
+    return `<div class="table-scroll"><table aria-label="${kind}"><colgroup>${cols.map(c => `<col data-col-key="${c.key}" style="width:${c.width}%">`).join('')}</colgroup><thead><tr>${cols.map((c, index) => `<th scope="col" tabindex="0" draggable="true" data-sort="${c.key}" data-kind="${kind}" data-column-key="${c.key}" title="Click to sort; drag to reorder">${esc(c.label)}${state.sortKind === kind && state.sortKey === c.key ? (state.sortDirection === 1 ? ' ▲' : ' ▼') : ''}${index < cols.length - 1 ? `<span class="column-resize" data-column-resize="${c.key}" data-column-kind="${kind}" title="Drag to resize column"></span>` : ''}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr draggable="true" tabindex="0" data-row="${esc(row.id)}" data-kind="${kind}" class="${state.selected.has(row.id) || (state.selected.size === 0 && (chains ? state.chain : state.message) === row.id) ? 'selected' : ''}" aria-selected="${state.selected.has(row.id)}">${cols.map(({ key }) => `<td title="${esc(row[key])}" class="${key === 'count' || key === 'attachments' ? 'number' : ''}">${esc(key === 'received' ? date(row[key]) : row[key])}</td>`).join('')}</tr>`).join('')}</tbody></table>${rows.length ? '' : '<div class="empty">No results</div>'}</div>`;
   }
   function refreshBox(title, mode, content) { return `<div class="refresh-box">${title}${content}${button('Refresh', 'refresh', `data-mode="${mode}"`, true)}</div>`; }
   function folders() {
     const chain = data.chains.find(c => c.id === state.chain);
     const tree = currentTree();
-    const rootOpen = isOpen('folders', ROOT_KEY);
-    const rootRow = `<div class="tree-row"><span class="handle">≡</span>${twisty('folders', ROOT_KEY, tree.length > 0)}${branchBox('folders', ROOT_KEY, tree.flatMap(branchOf), data.account)}<span class="tree-name">${esc(data.account)}</span></div>`;
-    return `<div class="folders-layout"><aside class="sidebar"><section class="panel folder-panel"><div class="section-title">Folders ${button('Refresh folder structure', 'refresh-folders')}</div><label class="system-toggle"><input type="checkbox" id="show-system" ${state.showSystem ? 'checked' : ''}>Show system folders</label><div class="tree">${rootRow}${rootOpen ? treeRows(tree) : ''}</div></section><section class="panel"><div class="section-title">Refresh</div>${refreshBox('Cutoff', 'cutoff', '<div><input id="days" type="number" min="0" value="0" aria-label="Cutoff days">days <input id="hours" type="number" min="0" value="24" aria-label="Cutoff hours">hours</div><div><input id="minutes" type="number" min="0" value="0" aria-label="Cutoff minutes">minutes</div>')}${refreshBox('Refresh from last update time', 'last', `<div class="muted">Earliest refresh among selected: ${esc(data.lastSynced)}<br>London</div>`)}${refreshBox('Refresh from start', 'start', '<div class="muted">Scans every selected (sub)folder in full — no cutoff.</div>')}<div class="refresh-note">${adapter ? 'Backend adapter supplied.' : 'Preview data — Outlook is not connected.'}</div></section></aside><aside class="panel queue-column"><div class="dropzone" data-drop="chains"><strong>Drop chains here</strong></div>${queue('chains')}</aside><section class="panel"><div class="panel-heading"><h2>${esc(state.folder)}</h2><span class="muted">${esc(data.account)} - ${esc(state.folder)}</span>${button('Copy all chains', 'copy-all', '', true)}</div><input class="chain-filter" id="chain-filter" placeholder="Filter chains…" aria-label="Filter chains" value="${esc(state.filter)}">${table(chainRows(), 'chains')}</section><aside class="panel detail-panel"><div class="panel-heading"><h2>${esc(chain?.subject ?? 'Select a chain')}</h2>${button('Copy to clipboard', 'copy-chain', '', true)}</div><pre class="reader">${esc(chain?.body)}</pre>${prompts()}</aside></div>`;
+    return `<div class="folders-layout"><aside class="sidebar"><section class="panel folder-panel"><div class="section-title">Folders ${button('Refresh folder structure', 'refresh-folders')}</div><label class="system-toggle"><input type="checkbox" id="show-system" ${state.showSystem ? 'checked' : ''}>Show system folders</label><div class="tree">${treeRows(tree, -1)}</div></section><section class="panel"><div class="section-title">Refresh</div>${refreshBox('Cutoff', 'cutoff', '<div><input id="days" type="number" min="0" value="0" aria-label="Cutoff days">days <input id="hours" type="number" min="0" value="24" aria-label="Cutoff hours">hours</div><div><input id="minutes" type="number" min="0" value="0" aria-label="Cutoff minutes">minutes</div>')}${refreshBox('Refresh from last update time', 'last', `<div class="muted">Earliest refresh among selected: ${esc(data.lastSynced)}<br>London</div>`)}${refreshBox('Refresh from start', 'start', '<div class="muted">Scans every selected (sub)folder in full — no cutoff.</div>')}<div class="refresh-note">${adapter ? 'Backend adapter supplied.' : 'Preview data — Outlook is not connected.'}</div></section></aside><aside class="panel queue-column"><div class="dropzone" data-drop="chains"><strong>Drop chains here</strong></div>${queue('chains')}</aside><section class="panel"><div class="panel-heading"><h2>${esc(state.folder)}</h2><span class="muted">${esc(data.account)} - ${esc(state.folder)}</span>${button('Copy all chains', 'copy-all', '', true)}</div><input class="chain-filter" id="chain-filter" placeholder="Filter chains…" aria-label="Filter chains" value="${esc(state.filter)}">${table(chainRows(), 'chains')}</section><aside class="panel detail-panel"><div class="panel-heading"><h2>${esc(chain?.subject ?? 'Select a chain')}</h2>${button('Copy to clipboard', 'copy-chain', '', true)}</div><pre class="reader">${esc(chain?.body)}</pre>${prompts()}</aside></div>`;
   }
   function filterField(label, name, placeholder = '', value = '', type = 'text', wide = false) { return `<label class="filter-field ${wide ? 'wide' : ''}">${label}<input name="${name}" type="${type}" placeholder="${placeholder}" value="${value}"></label>`; }
   function database() {
@@ -303,6 +406,8 @@
   let filterValues = null;
   function render() {
     app.innerHTML = state.tab === 'folders' ? folders() : state.tab === 'database' ? database() : disclaimers();
+    installDropQueues();
+    installResizeHandles();
     // Indeterminate is a DOM property only; it cannot be set from markup.
     app.querySelectorAll('[data-indeterminate="1"]').forEach(box => { box.indeterminate = true; });
     document.querySelectorAll('[data-tab]').forEach(b => { b.classList.toggle('active', b.dataset.tab === state.tab); b.setAttribute('aria-current', b.dataset.tab === state.tab ? 'page' : 'false'); });
@@ -310,6 +415,105 @@
     document.querySelector('#sync-status').title = adapter ? 'Backend data' : 'Synthetic preview data';
     if (state.tab === 'database' && filterValues) for (const [key, value] of Object.entries(filterValues)) { const field = app.querySelector(`[name="${key}"]`); if (field) { if (field.type === 'checkbox') field.checked = value; else field.value = value; } }
   }
+  app.addEventListener('pointerdown', event => {
+    const handle = event.target.closest('[data-column-resize]');
+    if (!handle) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const kind = handle.dataset.columnKind;
+    const columns = state.tableColumns[kind];
+    const index = columns.findIndex(column => column.key === handle.dataset.columnResize);
+    if (index < 0 || index >= columns.length - 1) return;
+    const tableElement = handle.closest('table');
+    const headers = [...tableElement.querySelectorAll('thead th')];
+    const initialLeft = headers[index].getBoundingClientRect().width;
+    const pairWidth = initialLeft + headers[index + 1].getBoundingClientRect().width;
+    const pairPercent = columns[index].width + columns[index + 1].width;
+    const startX = event.clientX;
+    document.body.classList.add('resizing-columns');
+
+    const move = moveEvent => {
+      const left = Math.max(36, Math.min(pairWidth - 36, initialLeft + moveEvent.clientX - startX));
+      columns[index].width = pairPercent * left / pairWidth;
+      columns[index + 1].width = pairPercent - columns[index].width;
+      const colElements = tableElement.querySelectorAll('col');
+      colElements[index].style.width = `${columns[index].width}%`;
+      colElements[index + 1].style.width = `${columns[index + 1].width}%`;
+    };
+    const stop = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', stop);
+      document.removeEventListener('pointercancel', stop);
+      document.body.classList.remove('resizing-columns');
+      saveTableColumns();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', stop);
+    document.addEventListener('pointercancel', stop);
+  });
+  app.addEventListener('pointerdown', event => {
+    const handle = event.target.closest('[data-queue-resize]');
+    if (!handle) return;
+    event.preventDefault();
+    const column = handle.parentElement;
+    const sections = [...column.querySelectorAll(':scope > .folder-drop-group')];
+    const initial = sections.map(section => section.getBoundingClientRect().height);
+    const available = initial[0] + initial[1];
+    const startY = event.clientY;
+    const name = handle.dataset.queueResize;
+    document.body.classList.add('resizing-queues');
+
+    const move = moveEvent => {
+      const top = Math.max(120, Math.min(available - 120, initial[0] + moveEvent.clientY - startY));
+      const percent = top / available * 100;
+      state.queueSplits[name] = percent;
+      column.style.gridTemplateRows = `minmax(120px, ${percent}fr) 9px minmax(120px, ${100 - percent}fr)`;
+    };
+    const stop = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', stop);
+      document.removeEventListener('pointercancel', stop);
+      document.body.classList.remove('resizing-queues');
+      saveQueueSplits();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', stop);
+    document.addEventListener('pointercancel', stop);
+  });
+  app.addEventListener('pointerdown', event => {
+    const handle = event.target.closest('[data-resize-layout]');
+    if (!handle) return;
+    event.preventDefault();
+    const layout = handle.parentElement;
+    const name = handle.dataset.resizeLayout;
+    const index = Number(handle.dataset.resizeIndex);
+    const panels = [...layout.children].filter(child => !child.classList.contains('resize-handle'));
+    const initial = panels.map(panel => panel.getBoundingClientRect().width);
+    const pairWidth = initial[index] + initial[index + 1];
+    const startX = event.clientX;
+    const minimums = layoutMinimums[name];
+    document.body.classList.add('resizing-sections');
+
+    const move = moveEvent => {
+      const left = Math.max(minimums[index], Math.min(pairWidth - minimums[index + 1], initial[index] + moveEvent.clientX - startX));
+      const current = [...initial];
+      current[index] = left;
+      current[index + 1] = pairWidth - left;
+      const widths = layoutDefaults[name].map((fallback, position) => current[position] || state.layoutWidths[name]?.[position] || fallback);
+      state.layoutWidths[name] = widths;
+      layout.style.gridTemplateColumns = layoutTemplate(name, widths, panels.length);
+    };
+    const stop = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', stop);
+      document.removeEventListener('pointercancel', stop);
+      document.body.classList.remove('resizing-sections');
+      saveLayoutWidths();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', stop);
+    document.addEventListener('pointercancel', stop);
+  });
   async function selectRow(row, additive) {
     const id = row.dataset.row;
     if (!additive) state.selected.clear();
@@ -340,11 +544,12 @@
     const tab = event.target.closest('[data-tab]');
     if (tab) { state.tab = tab.dataset.tab; state.selected.clear(); render(); if (adapter) { await loadBody(state.tab === 'folders' ? 'chains' : 'messages', state.tab === 'folders' ? state.chain : state.message); render(); } return; }
     const toggle = event.target.closest('[data-twisty]');
-    if (toggle) { const set = scopeCollapsed(toggle.dataset.scope); const key = toggle.dataset.twisty; if (set.has(key)) set.delete(key); else set.add(key); render(); return; }
+    if (toggle) { const scope = toggle.dataset.scope; const set = scopeCollapsed(scope); const key = toggle.dataset.twisty; if (set.has(key)) set.delete(key); else set.add(key); saveCollapsed(scope); render(); return; }
     const folder = event.target.closest('[data-folder]');
     if (folder) { await chooseFolder(folder.dataset.folder); return; }
     const row = event.target.closest('[data-row]'); if (row) { await selectRow(row, event.ctrlKey || event.metaKey); return; }
-    const sort = event.target.closest('[data-sort]'); if (sort) { const rows = sort.dataset.kind === 'chains' ? data.chains : state.results; const key = sort.dataset.sort; state.sortDirection = state.sortKey === key ? -state.sortDirection : 1; state.sortKey = key; rows.sort((a, b) => (typeof a[key] === 'number' ? a[key] - b[key] : String(a[key]).localeCompare(String(b[key]))) * state.sortDirection); render(); return; }
+    if (event.target.closest('[data-column-resize]')) return;
+    const sort = event.target.closest('[data-sort]'); if (sort) { const rows = sort.dataset.kind === 'chains' ? data.chains : state.results; const key = sort.dataset.sort; state.sortDirection = state.sortKind === sort.dataset.kind && state.sortKey === key ? -state.sortDirection : 1; state.sortKind = sort.dataset.kind; state.sortKey = key; rows.sort((a, b) => (typeof a[key] === 'number' ? a[key] - b[key] : String(a[key]).localeCompare(String(b[key]))) * state.sortDirection); render(); return; }
     const el = event.target.closest('[data-action]'); if (!el) return;
     const kind = el.dataset.kind, index = Number(el.dataset.index);
     switch (el.dataset.action) {
@@ -452,6 +657,14 @@
     if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-row], [data-sort]')) { event.preventDefault(); event.target.click(); }
   });
   app.addEventListener('dragstart', event => {
+    if (event.target.closest('[data-column-resize]')) { event.preventDefault(); return; }
+    const column = event.target.closest('[data-column-key]');
+    if (column) {
+      event.dataTransfer.setData('application/x-outlook-column', JSON.stringify({ kind: column.dataset.kind, key: column.dataset.columnKey }));
+      event.dataTransfer.effectAllowed = 'move';
+      column.classList.add('column-dragging');
+      return;
+    }
     const folder = event.target.closest('[data-folder-row]');
     if (folder) {
       event.dataTransfer.setData('application/x-outlook-folder-order', folder.dataset.folderRow);
@@ -463,10 +676,29 @@
     const ids = state.selected.has(row.dataset.row) ? [...state.selected] : [row.dataset.row];
     event.dataTransfer.setData('application/x-outlook-digest', JSON.stringify({ kind: row.dataset.kind, ids })); event.dataTransfer.effectAllowed = 'copy';
   });
-  app.addEventListener('dragover', event => { const folder = event.target.closest('[data-folder-row]'); if (folder) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; app.querySelectorAll('.folder-dragover').forEach(row => row.classList.remove('folder-dragover')); folder.classList.add('folder-dragover'); return; } const zone = event.target.closest('[data-drop]'); if (zone) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; zone.classList.add('dragover'); } });
-  app.addEventListener('dragleave', event => event.target.closest('[data-drop]')?.classList.remove('dragover'));
-  app.addEventListener('dragend', () => app.querySelectorAll('.dragging, .folder-dragover, .dragover').forEach(element => element.classList.remove('dragging', 'folder-dragover', 'dragover')));
+  app.addEventListener('dragover', event => { const column = event.target.closest('[data-column-key]'); if (column && event.dataTransfer.types.includes('application/x-outlook-column')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; app.querySelectorAll('.column-dragover').forEach(header => header.classList.remove('column-dragover')); column.classList.add('column-dragover'); return; } const folder = event.target.closest('[data-folder-row]'); if (folder) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; app.querySelectorAll('.folder-dragover').forEach(row => row.classList.remove('folder-dragover')); folder.classList.add('folder-dragover'); return; } const zone = event.target.closest('[data-drop]'); if (zone) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; zone.classList.add('dragover'); } });
+  app.addEventListener('dragleave', event => { event.target.closest('[data-drop]')?.classList.remove('dragover'); event.target.closest('[data-column-key]')?.classList.remove('column-dragover'); });
+  app.addEventListener('dragend', () => app.querySelectorAll('.dragging, .folder-dragover, .dragover, .column-dragging, .column-dragover').forEach(element => element.classList.remove('dragging', 'folder-dragover', 'dragover', 'column-dragging', 'column-dragover')));
   app.addEventListener('drop', async event => {
+    const columnTarget = event.target.closest('[data-column-key]');
+    const columnPayload = event.dataTransfer.getData('application/x-outlook-column');
+    if (columnTarget && columnPayload) {
+      event.preventDefault();
+      try {
+        const { kind, key } = JSON.parse(columnPayload);
+        if (kind !== columnTarget.dataset.kind || key === columnTarget.dataset.columnKey) return;
+        const columns = state.tableColumns[kind];
+        const sourceIndex = columns.findIndex(column => column.key === key);
+        if (sourceIndex < 0) return;
+        const [moving] = columns.splice(sourceIndex, 1);
+        let targetIndex = columns.findIndex(column => column.key === columnTarget.dataset.columnKey);
+        if (event.clientX > columnTarget.getBoundingClientRect().left + columnTarget.getBoundingClientRect().width / 2) targetIndex++;
+        columns.splice(targetIndex, 0, moving);
+        saveTableColumns();
+        render();
+      } catch { /* Ignore unrelated drags over column headings. */ }
+      return;
+    }
     const folderTarget = event.target.closest('[data-folder-row]');
     if (folderTarget) {
       event.preventDefault();
@@ -479,7 +711,7 @@
     try { const payload = JSON.parse(event.dataTransfer.getData('application/x-outlook-digest')); if (!['messages', 'chains'].includes(payload.kind) || !Array.isArray(payload.ids)) return;
       const kind = zone.dataset.drop; let ids = payload.ids;
       if (kind === 'chains' && payload.kind === 'messages') ids = ids.map(id => data.messages.find(m => m.id === id)?.chainId);
-      if (kind === 'messages' && payload.kind !== 'messages') return;
+      if (kind === 'messages' && payload.kind === 'chains') ids = ids.map(id => data.chains.find(chain => chain.id === id)?.latestMessageId);
       if (adapter) for (const id of ids.filter(Boolean)) await loadBody(kind, id);
       ids = ids.filter(id => data[kind].some(item => item.id === id)); state[kind] = [...new Set([...state[kind], ...ids])]; render();
     } catch { notice('Drag rows from the table. File imports are not included.'); }
@@ -487,6 +719,11 @@
   async function start() {
     if (adapter) { app.textContent = 'Loading…'; try { if (!adapter.getInitialData) throw new Error('getInitialData is required'); data = await adapter.getInitialData(); await loadServerPreferences(); data.folders = orderedFolders(data.folders); data.folderTree = data.folderTree?.length ? data.folderTree : treeFromPaths(data.folders); state.results = data.messages; state.folder = data.folders[0] || ''; state.checked = loadChecked(data.folders) || new Set(); state.chain = data.chains[0]?.id; state.message = data.messages[0]?.id; } catch (error) { app.textContent = `Unable to load backend data: ${error.message}`; return; } }
     else { data.folders = orderedFolders(data.folders); data.folderTree = treeFromPaths(data.folders); state.checked = loadChecked(data.folders) || state.checked; }
+    state.collapsed = loadCollapsed(collapsedKey);
+    state.dbCollapsed = loadCollapsed(dbCollapsedKey);
+    loadLayoutWidths();
+    loadQueueSplits();
+    loadTableColumns();
     render();
     if (adapter) { await loadBody('chains', state.chain); await loadBody('messages', state.message); render(); }
   }

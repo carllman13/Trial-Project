@@ -30,6 +30,7 @@ class DatabaseTests(unittest.TestCase):
         self.seed('earlier', body='First', stamp='2026-09-10T18:00:00Z')
         chains = read_api.chains(self.conn, 'Inbox')
         self.assertEqual(chains[0]['count'], 2)
+        self.assertEqual(chains[0]['latestMessageId'], 'later')
         body = read_api.chain(self.conn, 'c:thread')['body']
         self.assertLess(body.index('First'), body.index('Second'))
 

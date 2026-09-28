@@ -171,7 +171,8 @@ def chains(conn, folder=None, limit=500):
         (? IS NULL OR EXISTS (SELECT 1 FROM members s WHERE s.chain_key=r.chain_key AND s.folder=?))
         ORDER BY {STAMP} DESC, msg_key DESC LIMIT ?''', (folder, folder, limit))
     # Do not send the body fields selected by the window query to the browser.
-    return [dict(summary(conn, row), id=row['chain_key'], count=row['n'], folder=folder or row['folder'] or '') for row in selected]
+    return [dict(summary(conn, row), id=row['chain_key'], latestMessageId=row['msg_key'],
+                 count=row['n'], folder=folder or row['folder'] or '') for row in selected]
 
 
 def chain(conn, key):
