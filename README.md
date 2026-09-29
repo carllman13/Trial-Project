@@ -24,7 +24,7 @@ Files the app needs:
 | Where | Files |
 |---|---|
 | top level | `serve.py`, `dashboard_api.py`, `read_api.py`, `db.py`, `schema.sql`, `fetch.py`, `fetch_graph.py`, `splitter.py`, `cleaner.py`, `textnorm.py`, `.gitignore` |
-| `frontend/` | `index.html`, `app.js`, `adapter.js`, `styles.css`, `sample-data.js` |
+| `frontend/` | `index.html`, `app.js`, `adapter.js`, `styles.css` |
 
 Optional: `cli.py` and `demo.py` (command line), `test_*.py` and `tests.py`
 (offline checks), and the `.md` documentation.

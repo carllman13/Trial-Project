@@ -1,4 +1,4 @@
-/* Same-origin connection. Opening index.html directly retains sample preview mode. */
+/* Same-origin connection. */
 (() => {
   if (!/^https?:$/.test(location.protocol) || new URLSearchParams(location.search).has('preview')) return;
   const base = '/api/dashboard';
@@ -31,7 +31,7 @@
     const tree = await request('/folders');
     data.folderTree = Array.isArray(tree) ? tree : [];
     data.folders = [...new Set([...data.folders, ...paths(data.folderTree)])];
-    data.prompts = window.OutlookDigestSample.prompts.map(prompt => ({ ...prompt }));
+    data.prompts = Array.isArray(data.prompts) ? data.prompts : [];
     data.people = await request('/people');
     data.messages = await request('/messages/query', { limit: 500 });
     data.chains = await request('/chains?' + new URLSearchParams({ folder: data.folders[0] || '', limit: '500' }));

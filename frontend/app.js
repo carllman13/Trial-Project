@@ -4,7 +4,7 @@
   const app = document.querySelector('#app');
   const adapter = window.OutlookDigestAdapter;
   // Folders-tab preferences. mail.db (via the adapter) is the master copy;
-  // browser storage is a fallback for preview mode or an unreachable server.
+  // browser storage is a fallback when the server is unreachable.
   const folderOrderKey = 'outlook-digest-folder-order-v1';
   const checkedKey = 'outlook-digest-refresh-checked-v1';
   const collapsedKey = 'outlook-digest-folder-collapsed-v1';
@@ -13,7 +13,7 @@
   const queueSplitKey = 'outlook-digest-queue-splits-v1';
   const tableColumnsKey = 'outlook-digest-table-columns-v1';
   const prefName = { [folderOrderKey]: 'folderOrder', [checkedKey]: 'refreshChecked' };
-  // Per account, so the synthetic preview never overwrites a real mailbox's settings.
+  // Per account, so one mailbox never overwrites another mailbox's settings.
   const storageKey = base => `${base}:${data.account}`;
   const prefCache = {};
   function readPref(base) {
@@ -345,8 +345,8 @@
     await loadBody('chains', state.chain);
     render();
   }
-  let data = window.OutlookDigestSample;
-  const state = { tab: 'folders', folder: 'Humain', checked: new Set(data.folders.slice(0, 7)), selected: new Set(), chain: 'chain-1', message: 'message-1', chains: [], messages: [], filter: '', results: data.messages, raw: false, detail: true, showSystem: false, collapsed: new Set(), dbFolders: new Set(), dbCollapsed: new Set(), dbFolderOpen: false, dbFolderFilter: '', layoutWidths: { folders: null, database: null }, queueSplits: { folders: 50, database: 50 }, tableColumns: Object.fromEntries(Object.entries(tableColumnDefaults).map(([kind, columns]) => [kind, columns.map(column => ({ ...column }))])), people: { from: [], to: [], cc: [] }, peopleQuery: { from: '', to: '', cc: '' }, peopleOpen: null, peopleActive: -1 };
+  let data = { account: 'Local mailbox', lastSynced: '', totalRows: 0, folders: [], messages: [], chains: [], prompts: [], disclaimers: [], autoClean: false };
+  const state = { tab: 'folders', folder: '', checked: new Set(), selected: new Set(), chain: undefined, message: undefined, chains: [], messages: [], filter: '', results: data.messages, raw: false, detail: true, showSystem: false, collapsed: new Set(), dbFolders: new Set(), dbCollapsed: new Set(), dbFolderOpen: false, dbFolderFilter: '', layoutWidths: { folders: null, database: null }, queueSplits: { folders: 50, database: 50 }, tableColumns: Object.fromEntries(Object.entries(tableColumnDefaults).map(([kind, columns]) => [kind, columns.map(column => ({ ...column }))])), people: { from: [], to: [], cc: [] }, peopleQuery: { from: '', to: '', cc: '' }, peopleOpen: null, peopleActive: -1 };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const date = value => !value ? '' : new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)).replace(',', ' ·');
   const button = (label, action, extra = '', primary = false) => `<button class="${primary ? 'primary' : ''}" data-action="${action}" ${extra}>${label}</button>`;

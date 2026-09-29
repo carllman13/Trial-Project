@@ -12,19 +12,15 @@ existing local web server. Open at 1920-pixel viewport width and 100% browser zo
 to compare with the supplied screenshots. Smaller windows preserve the dense
 desktop layout and may scroll horizontally.
 
-All included email content is synthetic. Layout, colours and controls follow the
-screenshots; this is not a copy of the confidential underlying email dataset.
-No application or automated tests were run on the development computer, as
-requested. Exact pixel matching still needs a browser check on the work computer.
+No email content or sample mailbox data is included in the frontend.
 
-## Six files, three responsibilities
+## Five files, three responsibilities
 
 | File | Responsibility |
 | --- | --- |
 | `index.html` | Page shell and script loading |
 | `styles.css` | Screenshot-style layout and appearance |
 | `app.js` | Rendering and browser interactions |
-| `sample-data.js` | Synthetic preview data, separate from UI logic |
 | `adapter.js` | Same-origin FastAPI connector |
 | `README.md` | Setup and backend handoff |
 
@@ -33,20 +29,17 @@ checkboxes, persistent folder drag-ordering, table sorting, Ctrl/Cmd-click
 multi-selection, chain search, message
 filters, dragging rows into queues, removing/clearing queued items, copying
 messages/chains/prompts, showing raw message text, editing/toggling disclaimers.
-Filter criteria survive detail selection and switching tabs. Last N days in the
-preview is anchored to the sample snapshot date. Date filters use London dates;
-the evening window is 18:00 inclusive to 22:00 exclusive.
+Filter criteria survive detail selection and switching tabs. Date filters use
+London dates; the evening window is 18:00 inclusive to 22:00 exclusive.
 
-Preview changes last only until the page reloads. No data is saved in browser
-storage. Clipboard availability depends on browser policy; a fallback supports
-local-file previews where permitted. Raw HTML is displayed as **text**, never
-executed or inserted as message markup.
+Clipboard availability depends on browser policy. Raw HTML is displayed as
+**text**, never executed or inserted as message markup.
 
 The Folders tab's drag-order and ticked Refresh boxes are saved in the database
 (`sync_state`) through `getPreferences` / `savePreferences`, so they survive
 server restarts, cleared browser data and a different browser. A copy is also
-kept in browser storage per mailbox account, used in preview mode or if the
-database cannot be reached; on first connection an empty database adopts that
+kept in browser storage per mailbox account for times when the database cannot
+be reached; on first connection an empty database adopts that
 browser copy. The Database tab's folder filter is not saved. Drag-order changes the
 dashboard list only; it never moves or renames an Outlook folder. Folders reorder
 among siblings and move with their subfolders. Alt+Up/Down provides the keyboard
@@ -55,8 +48,9 @@ equivalent while a folder name is focused.
 ## Connect the FastAPI backend
 
 `adapter.js` connects the UI to the included `/api/dashboard/...` FastAPI routes
-when the page is served by the local server. Opening `index.html` directly keeps
-the synthetic preview mode. The browser never talks to Outlook or SQLite.
+when the page is served by the local server. Opening `index.html` directly shows
+an empty interface because no sample mailbox is bundled. The browser never talks
+to Outlook or SQLite.
 
 `serve.py` is the server; see the top of the main README to start it. Do not
 put Outlook access, SQL or disclaimer matching in `app.js`.
@@ -84,7 +78,7 @@ long-running job progress. Auto-clean changes only become persistent when saved.
 
 ### Data contract
 
-Use `sample-data.js` as the concrete example. A complete data object has:
+A complete data object has:
 
 ```js
 {
