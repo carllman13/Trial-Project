@@ -1,0 +1,11 @@
+# Development/dashboard dependencies only.
+#
+# The core CLI pipeline (cli.py and the fetch/split/clean modules) is pure
+# standard library, by design, so it runs on a locked-down work machine with
+# nothing installed. These packages are needed only to run the FastAPI
+# dashboard (dashboard_api.py + dev_server.py) and the offline test suite
+# (test_dashboard.py uses fastapi.testclient, which requires httpx).
+fastapi==0.141.*
+uvicorn[standard]==0.53.*
+pydantic==2.13.*
+httpx==0.28.*
